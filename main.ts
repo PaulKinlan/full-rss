@@ -40,6 +40,17 @@ const covertToMarkdown = (html: string): string => {
     },
   });
 
+  turndown.addRule("no-header", {
+    filter: (node: any) => {
+      const role = node.getAttribute("role");
+
+      return role == "banner" || role == "navigation";
+    },
+    replacement: (content: any) => {
+      return "";
+    },
+  });
+
   turndown.addRule("no-link", {
     filter: ["a"],
     replacement: function (content: any) {
