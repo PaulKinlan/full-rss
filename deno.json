@@ -1,0 +1,13 @@
+{
+  "imports": {
+    "@feed/feed": "jsr:@feed/feed@^1.1.0"
+  },
+  "deploy": {
+    "project": "62328f5a-9fb2-45e4-8219-5dd37024d5d1",
+    "exclude": [
+      "**/node_modules"
+    ],
+    "include": [],
+    "entrypoint": "main.ts"
+  }
+}
