@@ -23,7 +23,18 @@ const covertToMarkdown = (html: string): string => {
   const bodyText = $("body").first().html();
 
   turndown.addRule("no-style", {
-    filter: ["style", "script", "footer", "iframe", "head", "img", "input"],
+    filter: [
+      "style",
+      "script",
+      "footer",
+      "iframe",
+      "head",
+      "img",
+      "input",
+      "footer",
+      "nav",
+      "header",
+    ],
     replacement: function (content: any) {
       return "";
     },
