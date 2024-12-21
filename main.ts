@@ -10,11 +10,11 @@
 import crypto from "node:crypto";
 import { load } from "cheerio";
 import TurndownService from "turndown";
-import { Atom, Rss } from "@feed/feed";
+import { Rss } from "@feed/feed";
 import { parseFeed, Feed } from "@mikaelporttila/rss";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
-import { index } from "cheerio";
+import { index } from "./templates/index.ts";
 
 const db = await Deno.openKv();
 
@@ -245,22 +245,31 @@ Deno.serve(async (req) => {
   const url = searchParams.get("url");
 
   if (!url) {
-    const index = await Deno.readFile("index.html");
-    return new Response(new TextDecoder("utf-8").decode(index), {
+    return new Response(await index(undefined), {
       status: 200,
       headers: { "content-type": "text/html" },
     });
   }
 
   if (URL.canParse(url) === false) {
-    return new Response("Invalid URL parameter", { status: 400 });
+    return new Response(
+      await index(
+        "Invalid URL parameter. Please enter a valid URL e.g, https://paul.kinlan.me/index.xml"
+      ),
+      { status: 400 }
+    );
   }
 
   console.log(`Fetching feed from ${url}`);
 
   const feedResponse = await fetch(url);
   if (!feedResponse.ok) {
-    return new Response("Failed to fetch feed", { status: 500 });
+    return new Response(
+      await index("There was an error fetching the feed. Please check the URL"),
+      {
+        status: 500,
+      }
+    );
   }
 
   const feedXml = await feedResponse.text();

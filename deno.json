@@ -5,7 +5,8 @@
     "cheerio": "npm:cheerio@^1.0.0",
     "marked": "npm:marked@^15.0.4",
     "sanitize-html": "npm:sanitize-html@^2.14.0",
-    "turndown": "npm:turndown@^7.2.0"
+    "turndown": "npm:turndown@^7.2.0",
+    "whatwg-flora-tmpl": "npm:whatwg-flora-tmpl@^1.0.3"
   },
   "deploy": {
     "project": "62328f5a-9fb2-45e4-8219-5dd37024d5d1",

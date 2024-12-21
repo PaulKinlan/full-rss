@@ -12,7 +12,8 @@
     "npm:marked@^15.0.4": "15.0.4",
     "npm:sanitize-html@^2.14.0": "2.14.0",
     "npm:turndown@*": "7.2.0",
-    "npm:turndown@^7.2.0": "7.2.0"
+    "npm:turndown@^7.2.0": "7.2.0",
+    "npm:whatwg-flora-tmpl@^1.0.3": "1.0.3"
   },
   "jsr": {
     "@feed/feed@1.1.0": {
@@ -232,10 +233,19 @@
     "undici@6.21.0": {
       "integrity": "sha512-BUgJXc752Kou3oOIuU1i+yZZypyZRqNPW0vqoMPl8VaoalSfeR0D8/t4iAS3yirs79SSMTxTag+ZC86uswv+Cw=="
     },
+    "web-streams-polyfill@2.1.1": {
+      "integrity": "sha512-dlNpL2aab3g8CKfGz6rl8FNmGaRWLLn2g/DtSc9IjB30mEdE6XxzPfPSig5BwGSzI+oLxHyETrQGKjrVVhbLCg=="
+    },
     "whatwg-encoding@3.1.1": {
       "integrity": "sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ==",
       "dependencies": [
         "iconv-lite"
+      ]
+    },
+    "whatwg-flora-tmpl@1.0.3": {
+      "integrity": "sha512-UiE2rp3DSGP3PNjSiT+tGCK57LFcznQGmBcufs+VMbqHdrJPo2O9ShOnmKDIgm5Kyp+kLXlw6LvzKMrLPB2Sig==",
+      "dependencies": [
+        "web-streams-polyfill"
       ]
     },
     "whatwg-mimetype@4.0.0": {
@@ -255,7 +265,8 @@
       "npm:cheerio@1",
       "npm:marked@^15.0.4",
       "npm:sanitize-html@^2.14.0",
-      "npm:turndown@^7.2.0"
+      "npm:turndown@^7.2.0",
+      "npm:whatwg-flora-tmpl@^1.0.3"
     ]
   }
 }
