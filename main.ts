@@ -12,6 +12,8 @@ import { load } from "npm:cheerio";
 import TurndownService from "npm:turndown";
 import { Atom, Rss } from "@feed/feed";
 import { parseFeed, Feed } from "jsr:@mikaelporttila/rss@*";
+import { marked } from "marked";
+import sanitizeHtml from "sanitize-html";
 
 const db = await Deno.openKv();
 
@@ -194,7 +196,7 @@ const fetchContent = async (url: string): Promise<string> => {
     }).pipeThrough(new DecompressionStream("gzip"))
   ).text();
 
-  return newContent;
+  return sanitizeHtml(marked.parse(newContent));
 };
 
 /*

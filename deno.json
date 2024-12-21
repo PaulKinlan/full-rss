@@ -1,6 +1,8 @@
 {
   "imports": {
-    "@feed/feed": "jsr:@feed/feed@^1.1.0"
+    "@feed/feed": "jsr:@feed/feed@^1.1.0",
+    "marked": "npm:marked@^15.0.4",
+    "sanitize-html": "npm:sanitize-html@^2.14.0"
   },
   "deploy": {
     "project": "62328f5a-9fb2-45e4-8219-5dd37024d5d1",
