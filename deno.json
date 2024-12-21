@@ -1,14 +1,15 @@
 {
   "imports": {
     "@feed/feed": "jsr:@feed/feed@^1.1.0",
+    "@mikaelporttila/rss": "jsr:@mikaelporttila/rss@^1.1.1",
+    "cheerio": "npm:cheerio@^1.0.0",
     "marked": "npm:marked@^15.0.4",
-    "sanitize-html": "npm:sanitize-html@^2.14.0"
+    "sanitize-html": "npm:sanitize-html@^2.14.0",
+    "turndown": "npm:turndown@^7.2.0"
   },
   "deploy": {
     "project": "62328f5a-9fb2-45e4-8219-5dd37024d5d1",
-    "exclude": [
-      "**/node_modules"
-    ],
+    "exclude": ["**/node_modules"],
     "include": [],
     "entrypoint": "main.ts"
   }

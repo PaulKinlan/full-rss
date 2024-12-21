@@ -4,12 +4,15 @@
     "jsr:@feed/feed@^1.1.0": "1.1.0",
     "jsr:@maxim-mazurok/sax-ts@1.2.13": "1.2.13",
     "jsr:@mikaelporttila/rss@*": "1.1.1",
+    "jsr:@mikaelporttila/rss@^1.1.1": "1.1.1",
     "npm:@types/node@*": "22.5.4",
     "npm:cheerio@*": "1.0.0",
+    "npm:cheerio@1": "1.0.0",
     "npm:feed@*": "4.2.2",
     "npm:marked@^15.0.4": "15.0.4",
     "npm:sanitize-html@^2.14.0": "2.14.0",
-    "npm:turndown@*": "7.2.0"
+    "npm:turndown@*": "7.2.0",
+    "npm:turndown@^7.2.0": "7.2.0"
   },
   "jsr": {
     "@feed/feed@1.1.0": {
@@ -248,8 +251,11 @@
   "workspace": {
     "dependencies": [
       "jsr:@feed/feed@^1.1.0",
+      "jsr:@mikaelporttila/rss@^1.1.1",
+      "npm:cheerio@1",
       "npm:marked@^15.0.4",
-      "npm:sanitize-html@^2.14.0"
+      "npm:sanitize-html@^2.14.0",
+      "npm:turndown@^7.2.0"
     ]
   }
 }

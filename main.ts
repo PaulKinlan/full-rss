@@ -8,12 +8,13 @@
 */
 
 import crypto from "node:crypto";
-import { load } from "npm:cheerio";
-import TurndownService from "npm:turndown";
+import { load } from "cheerio";
+import TurndownService from "turndown";
 import { Atom, Rss } from "@feed/feed";
-import { parseFeed, Feed } from "jsr:@mikaelporttila/rss@*";
+import { parseFeed, Feed } from "@mikaelporttila/rss";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
+import { index } from "cheerio";
 
 const db = await Deno.openKv();
 
@@ -244,7 +245,11 @@ Deno.serve(async (req) => {
   const url = searchParams.get("url");
 
   if (!url) {
-    return new Response("Missing URL parameter", { status: 400 });
+    const index = await Deno.readFile("index.html");
+    return new Response(new TextDecoder("utf-8").decode(index), {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
   }
 
   if (URL.canParse(url) === false) {
