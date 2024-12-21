@@ -169,7 +169,7 @@ const fetchContent = async (url: string): Promise<string> => {
       totalSize += value.byteLength;
     }
 
-    console.log(totalSize);
+    console.log(url, totalSize);
 
     const concatenated = new Uint8Array(totalSize);
     let offset = 0;
@@ -224,7 +224,12 @@ const processFeed = async (feed: Feed): Promise<Feed> => {
       item.content = {};
     }
 
-    item.content.value = await fetchContent(url);
+    try {
+      item.content.value = await fetchContent(url);
+    } catch (e) {
+      // There was an error parsing the content, let's just skip this article rather than nuke the feed.
+      console.error(`Failed to fetch content for ${url}, ${e}`);
+    }
     articleCount++;
   }
   return feed;
