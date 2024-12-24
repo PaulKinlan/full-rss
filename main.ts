@@ -127,7 +127,7 @@ const fetchContent = async (url: string): Promise<string> => {
   }
 
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
-  let contentKV = await db.get([urlHash]);
+  const contentKV = await db.get([urlHash]);
   let content: Uint8Array = contentKV?.value as Uint8Array;
 
   if (content == null) {
@@ -151,7 +151,7 @@ const fetchContent = async (url: string): Promise<string> => {
       new CompressionStream("gzip")
     );
 
-    let compressedContent: Uint8Array[] = [];
+    const compressedContent: Uint8Array[] = [];
     let totalSize = 0;
     const reader = compressedReadableStream?.getReader();
 
