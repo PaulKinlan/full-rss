@@ -274,10 +274,22 @@ Deno.serve(async (req) => {
 
   const feedXml = await feedResponse.text();
 
-  const feed = await parseFeed(feedXml);
-  const fullFeed = await processFeed(feed);
+  try {
+    const feed = await parseFeed(feedXml);
+    const fullFeed = await processFeed(feed);
 
-  return new Response(await exportFeed(fullFeed), {
-    headers: { "content-type": "application/rss+xml" },
-  });
+    return new Response(await exportFeed(fullFeed), {
+      headers: { "content-type": "application/rss+xml" },
+    });
+  } catch (e) {
+    console.error(e);
+    return new Response(
+      await index(
+        "There was an error parsing the feed or an item in the feed. Please check the URL is a valid feed"
+      ),
+      {
+        status: 500,
+      }
+    );
+  }
 });
