@@ -113,7 +113,7 @@ const exportFeed = async (feed: Feed): Promise<string> => {
       updated: date,
       content: {
         body: content,
-        type: "text/html",
+        type: "html",
       },
     });
   }
