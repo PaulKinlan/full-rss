@@ -277,5 +277,7 @@ Deno.serve(async (req) => {
   const feed = await parseFeed(feedXml);
   const fullFeed = await processFeed(feed);
 
-  return new Response(await exportFeed(fullFeed));
+  return new Response(await exportFeed(fullFeed), {
+    headers: { "content-type": "application/rss+xml" },
+  });
 });
