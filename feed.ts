@@ -40,16 +40,18 @@ export const exportFeed = async (feed: Feed): Promise<string> => {
       continue;
     }
 
-    const authors = parseAuthors(entry.author);
-
     const content = entry.content?.value || "";
 
     const links = entry.links?.map((link) => link.href) || [];
 
-    const categories = entry.categories?.map((category) => category.term) || [];
-
     const date = entry.published || entry.updated || new Date();
 
+    // The item's author and categories are NOT emitted, and that is a limit of the feed builder rather than
+    // an omission here: @feed/feed's RssItem is exactly {title, link, id, updated, description, content} and
+    // its RssFeed.build() renders only those fields, so an item has nowhere to carry an author or a
+    // category. Parsing them and passing them to addItem() is silently ignored (measured 2026-10-12 against
+    // jsr:@feed/feed@1.1.0), which is why the two locals that used to do it are gone (full-rss-dhz).
+    // Emitting them needs the field upstream in @feed/feed, or a builder of our own - tracked separately.
     rssFeed.addItem({
       title: entry.title?.value || "",
       description: entry.description?.value || "",
