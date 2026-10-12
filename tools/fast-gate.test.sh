@@ -49,8 +49,14 @@ done
 # Paths the cases below create themselves, plus a stub for the gate's own suite: this fixture is inside the
 # repo it tests, so a .sh suite that now really runs must not be the real one (it would recurse).
 # `tests/unit/other.test.ts` is deliberately NOT in the map: case 3 uses it to prove that a changed suite maps
-# to itself without a row.
+# to itself without a row. src/ has to be made here: the loop above creates the directories of the paths the
+# MAP names, and src/newmodule.ts is deliberately not one of them (full-rss-4ce - writing to a missing
+# directory failed with "No such file or directory" on stderr while the suite still passed).
+mkdir -p "$ROOT/repo/src"
 : > "$ROOT/repo/src/newmodule.ts"; : > "$ROOT/repo/NOTES.txt"; : > "$ROOT/repo/tests/unit/other.test.ts"
+for p in src/newmodule.ts NOTES.txt tests/unit/other.test.ts; do
+  [ -e "$ROOT/repo/$p" ] || { echo "fixture: $p was not created - the cases below would test nothing" >&2; exit 1; }
+done
 cat > "$ROOT/repo/tools/fast-gate.test.sh" <<'STUBGATE'
 #!/usr/bin/env bash
 echo "STUB-GATE-SUITE ran"
