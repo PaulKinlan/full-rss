@@ -10,6 +10,114 @@ import { Rss } from "@feed/feed";
 import { Feed } from "@mikaelporttila/rss";
 import { fetchContent } from "./content.ts";
 
+/*
+  RSS 2.0 gives every item its own <author> and <category> elements, and @feed/feed can express neither: its
+  RssItem is exactly {title, link, id, updated, description, content} (plus image since 1.3.0) and anything
+  else handed to addItem() is silently ignored - measured against jsr:@feed/feed@1.1.0 and @1.3.0
+  (full-rss-fhy, and the reason an item's parsed author used to be dead code in full-rss-dhz).
+
+  Items are therefore added through the small subclass below, which writes those two elements at the single
+  place the library emits for every item, "    </item>\n":
+    * in the order addItem was called - entry order - so an item's metadata lands on its own item;
+    * only when there is something to write, so an item with neither renders exactly as it did before;
+    * after checking the item count, so a change to the library's item rendering fails loudly instead of
+      putting one article's author on another article.
+*/
+const ITEM_END = "    </item>\n";
+
+const XML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&apos;",
+};
+
+// One pass over the characters, so an entity that is already escaped is never escaped twice (the same
+// reason templates/index.ts spells its HTML escaper out rather than chaining replaces).
+const escapeXml = (value: string): string =>
+  value.replace(/[&<>"']/g, (char) => XML_ESCAPES[char] ?? char);
+
+type ItemAuthor = { name?: string; email?: string };
+
+/*
+  An item's author in the shape RSS 2.0 expects, "email (Name)" - the same shape @feed/feed writes for the
+  channel's author, so an RSS 2.0 feed round-trips: the parser hands that line back as `name` (its shape is
+  {name: "ada@example.com (Ada Lovelace)"}) and it is passed through unchanged.
+
+  A name with no email is written as it stands rather than dropped. In the spec <author> is an email address,
+  so the purist spelling of a name is Dublin Core's <dc:creator>, which would mean declaring a second namespace
+  on <rss> for the everyday Atom case of "<author><name>Grace Hopper</name></author>". Carrying the name in
+  <author> - which the channel block here already does - is the smaller change and still reaches readers.
+*/
+const itemAuthor = (author: ItemAuthor | undefined): string | undefined => {
+  if (author == null) {
+    return undefined;
+  }
+  const email = (author.email || "").trim();
+  const name = (author.name || "").trim();
+  if (email === "") {
+    return name === "" ? undefined : name;
+  }
+  return name === "" ? email : `${email} (${name})`;
+};
+
+const itemCategories = (
+  categories: { term?: string }[] | undefined,
+): string[] =>
+  (categories ?? [])
+    .map((category) => (category.term ?? "").trim())
+    .filter((term) => term !== "");
+
+type FeedItem = {
+  title: string;
+  link: string;
+  id: string;
+  updated: Date;
+  description: string;
+  content: { body: string; type: string };
+};
+
+type ItemMetadata = { author?: string; categories: string[] };
+
+class RssWithItemMetadata extends Rss {
+  #metadata: ItemMetadata[] = [];
+
+  addItemWithMetadata(item: FeedItem, metadata: ItemMetadata): void {
+    this.#metadata.push(metadata);
+    this.addItem(item);
+  }
+
+  override build(): string {
+    const xml = super.build();
+    if (this.#metadata.length === 0) {
+      return xml;
+    }
+
+    const parts = xml.split(ITEM_END);
+    const itemCount = parts.length - 1;
+    if (itemCount !== this.#metadata.length) {
+      throw new Error(
+        `feed: ${this.#metadata.length} item(s) were added but the built feed holds ${itemCount} - the RSS ` +
+          `builder's item rendering changed, so an item's author would land on the wrong article (full-rss-fhy)`,
+      );
+    }
+
+    let out = parts[0];
+    for (let i = 0; i < itemCount; i++) {
+      const { author, categories } = this.#metadata[i];
+      if (author !== undefined) {
+        out += `      <author>${escapeXml(author)}</author>\n`;
+      }
+      for (const category of categories) {
+        out += `      <category>${escapeXml(category)}</category>\n`;
+      }
+      out += ITEM_END + parts[i + 1];
+    }
+    return out;
+  }
+}
+
 export const exportFeed = (feed: Feed): string => {
   // Let's just assume RSS.
 
@@ -28,7 +136,7 @@ export const exportFeed = (feed: Feed): string => {
     ];
   };
 
-  const rssFeed = new Rss({
+  const rssFeed = new RssWithItemMetadata({
     title: feed.title?.value || "",
     description: feed.description || "",
     link: feed.links[0] || "",
@@ -46,23 +154,25 @@ export const exportFeed = (feed: Feed): string => {
 
     const date = entry.published || entry.updated || new Date();
 
-    // The item's author and categories are NOT emitted, and that is a limit of the feed builder rather than
-    // an omission here: @feed/feed's RssItem is exactly {title, link, id, updated, description, content} and
-    // its RssFeed.build() renders only those fields, so an item has nowhere to carry an author or a
-    // category. Parsing them and passing them to addItem() is silently ignored (measured 2026-10-12 against
-    // jsr:@feed/feed@1.1.0), which is why the two locals that used to do it are gone (full-rss-dhz).
-    // Emitting them needs the field upstream in @feed/feed, or a builder of our own - tracked separately.
-    rssFeed.addItem({
-      title: entry.title?.value || "",
-      description: entry.description?.value || "",
-      link: links[0] || "",
-      id: entry.id || "",
-      updated: date,
-      content: {
-        body: content,
-        type: "html",
+    // The item's author and categories go with the item: the subclass above writes them into the item's own
+    // block, because the builder cannot carry them itself (full-rss-fhy).
+    rssFeed.addItemWithMetadata(
+      {
+        title: entry.title?.value || "",
+        description: entry.description?.value || "",
+        link: links[0] || "",
+        id: entry.id || "",
+        updated: date,
+        content: {
+          body: content,
+          type: "html",
+        },
       },
-    });
+      {
+        author: itemAuthor(entry.author),
+        categories: itemCategories(entry.categories),
+      },
+    );
   }
 
   return rssFeed.build();
