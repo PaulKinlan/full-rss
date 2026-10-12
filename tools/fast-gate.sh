@@ -29,8 +29,11 @@
 #   bash tools/fast-gate.sh --base <ref>        # compare against another base
 #   FAST_GATE_JOBS=2 bash tools/fast-gate.sh    # cap parallel suites (default: 4)
 #
-# Exit codes: 0 = every selected suite passed (or nothing was affected); 1 = a suite failed, a mapped suite
-# is missing, or a changed file is unmapped. ANY non-zero is "unknown", never "green".
+# Exit codes: 0 = every selected suite passed (or nothing was affected); 1 = a suite failed, a suite ran no
+# tests, a mapped suite is missing, or a changed file is unmapped. ANY non-zero is "unknown", never "green".
+#
+# A suite ending in .sh is run with bash; every other suite goes to FAST_GATE_RUNNER. A runner that exits 0
+# without running a test case is a failure here, not a pass (see ran_no_tests below).
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -157,10 +160,25 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
 fi
 
 printf 'fast-gate: running: %s\n' "${SELECTED[@]}"
+
+# A suite that RAN NOTHING is not a green suite. `deno test <file>` exits 0 for a file that contains no test
+# cases, and it exits 0 for a shell script it cannot execute at all - which is how this gate reported
+# "passed: tools/fast-gate.test.sh" while never running it (full-rss-q9q, and full-rss-514 for what the suite
+# found when finally run by hand). Two rules follow: a .sh suite is executed with bash, and any suite whose
+# log shows the runner's all-zero summary fails, whatever the exit code said.
+ran_no_tests() {
+  grep -qE '[0-9]+ passed \| [0-9]+ failed' "$1" 2>/dev/null &&
+    ! grep -qE '[1-9][0-9]* (passed|failed|ignored)' "$1" 2>/dev/null
+}
+
 n=0
 for s in "${SELECTED[@]}"; do
   key=$(printf '%s' "$s" | tr '/.' '__')
-  ( cd "$ROOT" && $FAST_GATE_RUNNER "$s" >"$TMP/$key.log" 2>&1; echo $? >"$TMP/$key.rc" ) &
+  if [ "${s##*.}" = sh ]; then
+    ( cd "$ROOT" && bash "$s" >"$TMP/$key.log" 2>&1; echo $? >"$TMP/$key.rc" ) &
+  else
+    ( cd "$ROOT" && $FAST_GATE_RUNNER "$s" >"$TMP/$key.log" 2>&1; echo $? >"$TMP/$key.rc" ) &
+  fi
   n=$((n + 1))
   if [ "$n" -ge "$JOBS" ]; then wait -n; n=$((n - 1)); fi
 done
@@ -169,7 +187,13 @@ wait
 rc=0
 for s in "${SELECTED[@]}"; do
   key=$(printf '%s' "$s" | tr '/.' '__')
-  if [ "$(cat "$TMP/$key.rc" 2>/dev/null)" = 0 ]; then
+  s_rc=$(cat "$TMP/$key.rc" 2>/dev/null)
+  if [ "$s_rc" = 0 ] && ran_no_tests "$TMP/$key.log"; then
+    echo "fast-gate: failed: $s"
+    echo "    ran no tests: the runner exited 0 without running one (a suite that cannot fail cannot pass)" >&2
+    sed 's/^/    /' "$TMP/$key.log" 2>/dev/null | tail -20
+    rc=1
+  elif [ "$s_rc" = 0 ]; then
     echo "fast-gate: passed: $s"
   else
     echo "fast-gate: failed: $s"
