@@ -6,7 +6,7 @@
 // Atom. The fixtures are inline strings — no network, no files, no shared state.
 import { assert, assertExcludes, assertIncludes } from "../asserts.ts";
 import { parseFeed } from "@mikaelporttila/rss";
-import { exportFeed } from "../../main.ts";
+import { exportFeed } from "../../feed.ts";
 
 const RSS = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">

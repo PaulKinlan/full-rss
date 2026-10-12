@@ -39,9 +39,18 @@ anything. The fast gate selects suites from `tools/suite-map.tsv` and **fails lo
 maps to no suite, so a new module needs a row there (the file's header explains the rules).
 `fleet-check`/`fleet-check --fast` on the project VM run exactly these two commands (`tools/check.conf`).
 
-Unit suites live in `tests/unit/` (`deno test --allow-env tests`). `main.ts` is importable: the HTTP server
-only starts under `import.meta.main` and the KV handle is opened at boot, so importing `convertToMarkdown`,
-`exportFeed`, `processFeed` or `fetchContent` binds no port and touches no KV.
+Unit suites live in `tests/unit/` and boundary (routing) suites in `tests/integration/`
+(`deno test --allow-env tests`). Nothing binds a port or opens KV at import time — `serve()` opens the KV
+handle and `main.ts` only calls it under `import.meta.main` — so every domain function is importable from a
+test. The application is split so that a change to one concern cannot collide with another:
+
+| file | what it owns |
+|---|---|
+| `main.ts` | the entrypoint Deno Deploy runs; boot only |
+| `server.ts` | HTTP routing, status codes and the socket (`serve()`) |
+| `feed.ts` | a parsed feed to the RSS 2.0 document (`exportFeed`, `processFeed`) |
+| `content.ts` | article fetch, HTML to markdown, gzipped KV cache (`fetchContent`) |
+| `templates/index.ts` | the HTML landing/error page |
 
 ## Endpoints
 

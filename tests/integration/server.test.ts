@@ -1,0 +1,127 @@
+// tests/integration/server.test.ts — the routing contract of `server.ts`.
+//
+// The split (full-rss-11b) is what makes this testable: `handleRequest` takes a Request and returns a
+// Response without a socket, so every outcome of the one public endpoint can be asserted in-process. This
+// is the boundary tier — status codes, the content type of the feed, and the shape of the document a reader
+// receives — not the unit tier (content.ts and feed.ts have their own suites).
+//
+// The upstream feed is stubbed: `globalThis.fetch` is replaced per test and restored in a `finally`, so this
+// suite needs no network, no server and no KV, and it does not depend on any real site being up.
+//
+// Articles' full content is deliberately NOT asserted here: `fetchContent` reads Deno KV, which the test
+// process does not have (`--unstable-kv` is not part of the gate). Test 6 pins what matters in both worlds —
+// an article that cannot be enriched must not remove the item from the feed.
+import { assert, assertEqual, assertIncludes } from "../asserts.ts";
+import { handleRequest } from "../../server.ts";
+
+const FEED = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>Routing Fixture</title>
+  <description>Fixture</description>
+  <link>https://example.com/</link>
+  <item><title>First</title><link>https://example.com/first</link><guid>first</guid>
+    <description>Summary one</description></item>
+  <item><title>Second</title><link>https://example.com/second</link><guid>second</guid>
+    <description>Summary two</description></item>
+</channel></rss>`;
+
+const FEED_WITHOUT_LINKS = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>No Links</title>
+  <link>https://example.com/</link>
+  <item><title>Linkless</title><guid>linkless</guid><description>No link to follow</description></item>
+</channel></rss>`;
+
+/** Replace `fetch` for the duration of `body`, then always restore it. */
+async function withStubbedFetch(
+  impl: (url: string) => Response,
+  body: () => Promise<void>,
+): Promise<void> {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request) =>
+    Promise.resolve(
+      impl(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+          ? input.href
+          : input.url,
+      ),
+    )) as typeof globalThis.fetch;
+  try {
+    await body();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+const get = (query = ""): Promise<Response> =>
+  handleRequest(new Request(`http://localhost/${query}`));
+
+Deno.test("a non-GET request is refused with 405", async () => {
+  const res = await handleRequest(new Request("http://localhost/", { method: "POST" }));
+  assertEqual(res.status, 405, "status");
+  assertEqual(await res.text(), "Method not allowed", "body");
+});
+
+Deno.test("no url renders the index page", async () => {
+  const res = await get();
+  assertEqual(res.status, 200, "status");
+  assertEqual(res.headers.get("content-type"), "text/html", "content type");
+  assertIncludes(await res.text(), '<form action="/">', "the URL form");
+});
+
+Deno.test("an unusable url is refused with 400 and the warning page", async () => {
+  const res = await get("?url=not-a-url");
+  assertEqual(res.status, 400, "status");
+  assertIncludes(
+    await res.text(),
+    '<p class="warning">Invalid URL parameter.',
+    "the warning message",
+  );
+});
+
+Deno.test("a feed that cannot be fetched is a 500 with the warning page", async () => {
+  await withStubbedFetch(
+    () => new Response("gone", { status: 404 }),
+    async () => {
+      const res = await get("?url=https://example.com/feed.xml");
+      assertEqual(res.status, 500, "status");
+      assertIncludes(
+        await res.text(),
+        "There was an error fetching the feed",
+        "the warning message",
+      );
+    },
+  );
+});
+
+Deno.test("a valid feed comes back as RSS 2.0 with every item", async () => {
+  await withStubbedFetch(
+    () => new Response(FEED_WITHOUT_LINKS, { status: 200 }),
+    async () => {
+      const res = await get("?url=https://example.com/feed.xml");
+      assertEqual(res.status, 200, "status");
+      assertEqual(res.headers.get("content-type"), "application/rss+xml", "content type");
+      const xml = await res.text();
+      assertIncludes(xml, "<title>No Links</title>", "the channel title");
+      assertIncludes(xml, "<title>Linkless</title>", "the item");
+    },
+  );
+});
+
+Deno.test("an article that cannot be enriched does not remove its item from the feed", async () => {
+  await withStubbedFetch(
+    (url) => new Response(url.includes("feed.xml") ? FEED : "not an article", { status: 200 }),
+    async () => {
+      // `handleRequest` must not reject even though enriching each article needs KV and a second fetch.
+      const res = await get("?url=https://example.com/feed.xml");
+      assertEqual(res.status, 200, "status");
+      const xml = await res.text();
+      assertIncludes(xml, "<title>Routing Fixture</title>", "the channel title");
+      assertIncludes(xml, "<title>First</title>", "the first item");
+      assertIncludes(xml, "<title>Second</title>", "the second item");
+      assertIncludes(xml, "<link>https://example.com/first</link>", "the first item's link");
+    },
+  );
+});

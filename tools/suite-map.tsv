@@ -16,12 +16,14 @@
 #     existed cover that module too. A new module is UNMAPPED until its author names its suites.
 
 # --- source -> every suite that covers it --------------------------------------------------------------
-# main.ts is the whole application today; content.test.ts covers the HTML/markdown transform and
-# feed.test.ts covers the feed -> RSS output. When main.ts is split into feed/content/server modules this
-# file must gain one row per new module (the split's own bead owns that).
-main.ts	tests/unit/feed.test.ts tests/unit/content.test.ts
+# One row per module, so a NEW module is unmapped until its author names the suites that cover it. main.ts is
+# the boot file and content.ts/feed.ts/server.ts are the application (full-rss-11b, the ADR full-rss-7d0).
+main.ts	tests/integration/main.test.ts
+content.ts	tests/unit/content.test.ts
+feed.ts	tests/unit/feed.test.ts
+server.ts	tests/integration/server.test.ts
 templates/index.ts	tests/unit/index_template.test.ts
-tests/asserts.ts	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts
+tests/asserts.ts	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts tests/integration/server.test.ts tests/integration/main.test.ts
 
 # --- the gate itself is code, and it has its own suite -------------------------------------------------
 tools/fast-gate.sh	tools/fast-gate.test.sh
@@ -34,8 +36,8 @@ tools/full-gate.sh	tools/fast-gate.test.sh
 tools/fast-gate.test.sh	tools/fast-gate.test.sh
 
 # --- a dependency change can invalidate any suite, so claim every suite -------------------------------
-deno.json	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts
-deno.lock	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts
+deno.json	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts tests/integration/server.test.ts tests/integration/main.test.ts
+deno.lock	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts tests/integration/server.test.ts tests/integration/main.test.ts
 
 # --- exemptions: no suite can cover these --------------------------------------------------------------
 !docs/**	# prose; a wrong doc is a docs-drift finding, not a test failure

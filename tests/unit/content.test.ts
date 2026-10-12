@@ -8,7 +8,7 @@
 // Not covered: the KV read/compression path in `fetchContent` needs a live Deno KV and a network fetch, so
 // it is exercised against the deployed service rather than in a unit suite.
 import { assert, assertExcludes, assertIncludes, assertRejects } from "../asserts.ts";
-import { convertToMarkdown, fetchContent } from "../../main.ts";
+import { convertToMarkdown, fetchContent } from "../../content.ts";
 
 const PAGE = `<!doctype html>
 <html>
