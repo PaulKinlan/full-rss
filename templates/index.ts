@@ -10,7 +10,7 @@ const HTML_ESCAPES: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",
   ">": "&gt;",
-  '\"': "&quot;",
+  '"': "&quot;",
   "'": "&#39;",
 };
 
@@ -18,8 +18,9 @@ const escapeHtml = (value: string): string =>
   value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] ?? char);
 
 export const index = (
-  message: string | undefined
-) => template`<!DOCTYPE html>
+  message: string | undefined,
+) =>
+  template`<!DOCTYPE html>
 <html lang="en">
 
 <head>

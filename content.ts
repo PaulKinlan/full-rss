@@ -97,7 +97,7 @@ export const fetchContent = async (url: string): Promise<string> => {
     // Cache the content in KV, and compress it
 
     const compressedReadableStream = stringStream.pipeThrough(
-      new CompressionStream("gzip")
+      new CompressionStream("gzip"),
     );
 
     const compressedContent: Uint8Array[] = [];
@@ -143,7 +143,7 @@ export const fetchContent = async (url: string): Promise<string> => {
         controller.enqueue(content);
         controller.close();
       },
-    }).pipeThrough(new DecompressionStream("gzip"))
+    }).pipeThrough(new DecompressionStream("gzip")),
   ).text();
 
   return sanitizeHtml(marked.parse(newContent));

@@ -2,7 +2,9 @@
 
 ## Description
 
-Full RSS is a Deno-based application that takes an RSS feed and returns the full content of each article in the same RSS feed. It uses KV storage for caching the full content of each article.
+Full RSS is a Deno-based application that takes an RSS feed and returns the full
+content of each article in the same RSS feed. It uses KV storage for caching the
+full content of each article.
 
 ## Features
 
@@ -24,8 +26,9 @@ To start the server, run the following command:
 deno run --unstable-kv --allow-net --allow-read --allow-write --allow-env main.ts
 ```
 
-`--unstable-kv` is required: `Deno.openKv` is still an unstable API in the pinned toolchain (Deno 2.9.7),
-and without the flag the process exits at boot with `TypeError: Deno.openKv is not a function`.
+`--unstable-kv` is required: `Deno.openKv` is still an unstable API in the
+pinned toolchain (Deno 2.9.7), and without the flag the process exits at boot
+with `TypeError: Deno.openKv is not a function`.
 
 ## Tests and gates
 
@@ -34,31 +37,40 @@ bash tools/fast-gate.sh   # changed/affected suites only — the gate for a sing
 bash tools/full-gate.sh   # type-check plus every suite — the gate for a landing
 ```
 
-Both are driven from one place, `tools/gate.conf`, and both run under `deno test`; neither downloads
-anything. The fast gate selects suites from `tools/suite-map.tsv` and **fails loudly** when a changed file
-maps to no suite, so a new module needs a row there (the file's header explains the rules).
-`fleet-check`/`fleet-check --fast` on the project VM run exactly these two commands (`tools/check.conf`).
+Both are driven from one place, `tools/gate.conf`, and both run under
+`deno test`; neither downloads anything. The fast gate selects suites from
+`tools/suite-map.tsv` and **fails loudly** when a changed file maps to no suite,
+so a new module needs a row there (the file's header explains the rules).
+`fleet-check`/`fleet-check --fast` on the project VM run exactly these two
+commands (`tools/check.conf`).
 
-The landing gate also runs the static half: `deno check` on every module and `deno lint` over the tree
-(`tools/gate.conf`'s `STATIC_CMD`). `deno fmt --check` is **not** part of the gate: 11 of 13 files are
-unformatted, so reformatting is its own change, to be followed by adding the check.
+The landing gate also runs the static half: `deno check` on every module,
+`deno
+lint` over the tree and `deno fmt --check` (`tools/gate.conf`'s
+`STATIC_CMD`). Each of the three was added in the change that made it pass - the
+tree was formatted in one whitespace-only commit (11 of 13 files) before the
+format check joined, and lint went green first - so none of them is a red the
+reader learns to ignore.
 
-Unit suites live in `tests/unit/` and boundary (routing) suites in `tests/integration/`
-(`deno test --allow-env tests`). Nothing binds a port or opens KV at import time — `serve()` opens the KV
-handle and `main.ts` only calls it under `import.meta.main` — so every domain function is importable from a
-test. The application is split so that a change to one concern cannot collide with another:
+Unit suites live in `tests/unit/` and boundary (routing) suites in
+`tests/integration/` (`deno test --allow-env tests`). Nothing binds a port or
+opens KV at import time — `serve()` opens the KV handle and `main.ts` only calls
+it under `import.meta.main` — so every domain function is importable from a
+test. The application is split so that a change to one concern cannot collide
+with another:
 
-| file | what it owns |
-|---|---|
-| `main.ts` | the entrypoint Deno Deploy runs; boot only |
-| `server.ts` | HTTP routing, status codes and the socket (`serve()`) |
-| `feed.ts` | a parsed feed to the RSS 2.0 document (`exportFeed`, `processFeed`) |
-| `content.ts` | article fetch, HTML to markdown, gzipped KV cache (`fetchContent`) |
-| `templates/index.ts` | the HTML landing/error page |
+| file                 | what it owns                                                        |
+| -------------------- | ------------------------------------------------------------------- |
+| `main.ts`            | the entrypoint Deno Deploy runs; boot only                          |
+| `server.ts`          | HTTP routing, status codes and the socket (`serve()`)               |
+| `feed.ts`            | a parsed feed to the RSS 2.0 document (`exportFeed`, `processFeed`) |
+| `content.ts`         | article fetch, HTML to markdown, gzipped KV cache (`fetchContent`)  |
+| `templates/index.ts` | the HTML landing/error page                                         |
 
 ## Endpoints
 
-- `GET /?url=<URL>`: Fetches the full content of each article in the RSS feed at the specified URL.
+- `GET /?url=<URL>`: Fetches the full content of each article in the RSS feed at
+  the specified URL.
 
 ```sh
 curl "http://localhost:8000/?url=https://example.com/rss"

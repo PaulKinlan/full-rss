@@ -30,9 +30,9 @@ export const handleRequest = async (req: Request): Promise<Response> => {
   if (URL.canParse(url) === false) {
     return new Response(
       await index(
-        "Invalid URL parameter. Please enter a valid URL e.g, https://paul.kinlan.me/index.xml"
+        "Invalid URL parameter. Please enter a valid URL e.g, https://paul.kinlan.me/index.xml",
       ),
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -44,7 +44,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       await index("There was an error fetching the feed. Please check the URL"),
       {
         status: 500,
-      }
+      },
     );
   }
 
@@ -61,11 +61,11 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     console.error(e);
     return new Response(
       await index(
-        "There was an error parsing the feed or an item in the feed. Please check the URL is a valid feed"
+        "There was an error parsing the feed or an item in the feed. Please check the URL is a valid feed",
       ),
       {
         status: 500,
-      }
+      },
     );
   }
 };

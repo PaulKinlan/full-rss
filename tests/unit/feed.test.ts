@@ -91,7 +91,8 @@ Deno.test("exportFeed converts an Atom feed into RSS 2.0", async () => {
 });
 
 Deno.test("exportFeed is deterministic apart from lastBuildDate", async () => {
-  const strip = (xml: string) => xml.replace(/<lastBuildDate>[^<]*<\/lastBuildDate>/g, "");
+  const strip = (xml: string) =>
+    xml.replace(/<lastBuildDate>[^<]*<\/lastBuildDate>/g, "");
   const first = exportFeed(await parseFeed(RSS));
   const second = exportFeed(await parseFeed(RSS));
   assert(

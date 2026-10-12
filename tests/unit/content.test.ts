@@ -7,7 +7,12 @@
 //
 // Not covered: the KV read/compression path in `fetchContent` needs a live Deno KV and a network fetch, so
 // it is exercised against the deployed service rather than in a unit suite.
-import { assert, assertExcludes, assertIncludes, assertRejects } from "../asserts.ts";
+import {
+  assert,
+  assertExcludes,
+  assertIncludes,
+  assertRejects,
+} from "../asserts.ts";
 import { convertToMarkdown, fetchContent } from "../../content.ts";
 
 const PAGE = `<!doctype html>
@@ -26,13 +31,24 @@ Deno.test("convertToMarkdown prefixes the document title as a level-1 heading", 
   const markdown = convertToMarkdown(PAGE);
   assert(
     markdown.startsWith("# Post Title\n\n"),
-    `the markdown to start with the page title heading, got ${JSON.stringify(markdown.slice(0, 40))}`,
+    `the markdown to start with the page title heading, got ${
+      JSON.stringify(markdown.slice(0, 40))
+    }`,
   );
 });
 
 Deno.test("convertToMarkdown drops page chrome: style, script, nav, img and footer", () => {
   const markdown = convertToMarkdown(PAGE);
-  for (const dropped of ["analytics()", "color: red", "Home", "Footer text", "<img", "<script"]) {
+  for (
+    const dropped of [
+      "analytics()",
+      "color: red",
+      "Home",
+      "Footer text",
+      "<img",
+      "<script",
+    ]
+  ) {
     assertExcludes(markdown, dropped, "dropped by the turndown rules");
   }
 });
@@ -52,5 +68,9 @@ Deno.test("convertToMarkdown converts headings to markdown", () => {
 });
 
 Deno.test("fetchContent rejects a URL that cannot be parsed, before any network call", async () => {
-  await assertRejects(() => fetchContent("not a url"), "Invalid URL not a url", "fetchContent");
+  await assertRejects(
+    () => fetchContent("not a url"),
+    "Invalid URL not a url",
+    "fetchContent",
+  );
 });
