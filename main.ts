@@ -16,9 +16,12 @@ import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import { index } from "./templates/index.ts";
 
-const db = await Deno.openKv();
+// Deno KV is opened LAZILY, on first use. Importing this module (a test importing the transform and feed
+// functions, for instance) must not need KV permissions or a database handle; only serving and fetching do.
+let db: Deno.Kv | undefined;
+const kv = async (): Promise<Deno.Kv> => (db ??= await Deno.openKv());
 
-const covertToMarkdown = (html: string): string => {
+export const convertToMarkdown = (html: string): string => {
   const turndown = new TurndownService();
   const $ = load(html);
 
@@ -65,7 +68,7 @@ const covertToMarkdown = (html: string): string => {
   return `# ${title}\n\n${markdown}`;
 };
 
-const exportFeed = async (feed: Feed): Promise<string> => {
+export const exportFeed = async (feed: Feed): Promise<string> => {
   // Let's just assume RSS.
 
   const parseAuthors = (
@@ -121,13 +124,13 @@ const exportFeed = async (feed: Feed): Promise<string> => {
   return rssFeed.build();
 };
 
-const fetchContent = async (url: string): Promise<string> => {
+export const fetchContent = async (url: string): Promise<string> => {
   if (URL.canParse(url) === false) {
     throw new Error(`Invalid URL ${url}`);
   }
 
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
-  const contentKV = await db.get([urlHash]);
+  const contentKV = await (await kv()).get([urlHash]);
   let content: Uint8Array = contentKV?.value as Uint8Array;
 
   if (content == null) {
@@ -136,7 +139,7 @@ const fetchContent = async (url: string): Promise<string> => {
 
     // We are not going to save the HTML, we are going to convert it to markdown. We will take the encoding, decoding hit.
 
-    const markDown = covertToMarkdown(await newFeed.text());
+    const markDown = convertToMarkdown(await newFeed.text());
 
     const stringStream = new ReadableStream({
       start(controller) {
@@ -182,7 +185,7 @@ const fetchContent = async (url: string): Promise<string> => {
 
     content = concatenated;
 
-    db.set([urlHash], content, {
+    (await kv()).set([urlHash], content, {
       expireIn: 60 * 1000, // 60 seconds
     });
   }
@@ -203,7 +206,7 @@ const fetchContent = async (url: string): Promise<string> => {
 /*
   Process the feed and attempt to get the full content of each article.
 */
-const processFeed = async (feed: Feed): Promise<Feed> => {
+export const processFeed = async (feed: Feed): Promise<Feed> => {
   const MAX_ARTICLES = 10;
   let articleCount = 0;
   for (const item of feed.entries) {
@@ -236,7 +239,14 @@ const processFeed = async (feed: Feed): Promise<Feed> => {
   return feed;
 };
 
-Deno.serve(async (req) => {
+// Open the KV handle at boot and only at boot: an unavailable KV must fail here, loudly, exactly as it did
+// when the handle was opened at module load, instead of failing per article inside processFeed's error
+// handling (which would silently degrade every feed to summaries only).
+if (import.meta.main) await kv();
+
+// `import.meta.main` keeps the server out of every import of this module, so the domain functions above
+// can be imported and tested without binding a port.
+if (import.meta.main) Deno.serve(async (req) => {
   if (req.method !== "GET") {
     return new Response("Method not allowed", { status: 405 });
   }
