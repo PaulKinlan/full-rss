@@ -1,0 +1,45 @@
+# tools/suite-map.tsv — which suites cover which changed path. The ONLY place affected-only selection is
+# decided: the fast gate runs the suites named here for a changed file, and FAILS LOUDLY when a changed file
+# maps to none, because a changed module that maps to zero suites is a false green.
+#
+# FORMAT
+#   <glob><TAB><suite> [<suite> ...]     a changed path matching <glob> runs those suites
+#   !<glob>                              EXEMPT: no suite can cover this path
+#
+# RULES
+#   * Globs are bash patterns tested with `[[ $path == $glob ]]`, so `*` also crosses `/`.
+#   * A changed file under tests/ that is itself a suite maps to ITSELF, before this file is consulted.
+#   * A row beats an exemption. A source file with several covering suites must list ALL of them: the
+#     surviving suites prove nothing about the omitted one (the full gate on the merged union is the only
+#     independent oracle for that).
+#   * ONE MODULE PER ROW, deliberately: a directory-wide row would claim that suites written before a module
+#     existed cover that module too. A new module is UNMAPPED until its author names its suites.
+
+# --- source -> every suite that covers it --------------------------------------------------------------
+# main.ts is the whole application today; content.test.ts covers the HTML/markdown transform and
+# feed.test.ts covers the feed -> RSS output. When main.ts is split into feed/content/server modules this
+# file must gain one row per new module (the split's own bead owns that).
+main.ts	tests/unit/feed.test.ts tests/unit/content.test.ts
+templates/index.ts	tests/unit/index_template.test.ts
+tests/asserts.ts	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts
+
+# --- the gate itself is code, and it has its own suite -------------------------------------------------
+tools/fast-gate.sh	tools/fast-gate.test.sh
+tools/suite-map.tsv	tools/fast-gate.test.sh
+tools/gate.conf	tools/fast-gate.test.sh
+tools/check.conf	tools/fast-gate.test.sh
+# The full-gate wrapper is what the merger and CI run, so tools/fast-gate.test.sh exercises its two steps
+# (with stub commands) as well as the fast gate's selection. Editing the suite itself maps to itself.
+tools/full-gate.sh	tools/fast-gate.test.sh
+tools/fast-gate.test.sh	tools/fast-gate.test.sh
+
+# --- a dependency change can invalidate any suite, so claim every suite -------------------------------
+deno.json	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts
+deno.lock	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts
+
+# --- exemptions: no suite can cover these --------------------------------------------------------------
+!docs/**	# prose; a wrong doc is a docs-drift finding, not a test failure
+!**/*.md	# nested prose: same reason
+!*.md		# top-level prose (README): same reason
+!LICENSE
+!.github/**	# CI config: it is exercised by running it on the platform's own runner
