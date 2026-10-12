@@ -27,15 +27,44 @@ ROOT=$(mktemp -d); trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$ROOT/repo"
 cp -r "$HERE" "$ROOT/repo/tools"
 GATE="$ROOT/repo/tools/fast-gate.sh"
-mkdir -p "$ROOT/repo/tests/unit" "$ROOT/repo/tests/integration"
-: > "$ROOT/repo/tests/unit/greet.test.ts"
-: > "$ROOT/repo/tests/unit/other.test.ts"
-: > "$ROOT/repo/tests/unit/feed.test.ts"
-: > "$ROOT/repo/tests/unit/content.test.ts"
-: > "$ROOT/repo/tests/unit/index_template.test.ts"
-: > "$ROOT/repo/tests/integration/greet.integration.test.ts"
-mkdir -p "$ROOT/repo/src" "$ROOT/repo/templates"
-: > "$ROOT/repo/src/greet.ts"; : > "$ROOT/repo/main.ts"; : > "$ROOT/repo/templates/index.ts"
+MAP="$HERE/suite-map.tsv"
+
+# The fixture FOLLOWS this repo's map instead of hardcoding its rows. A map edit - a module split, a new
+# module - must not make the gate red for whoever makes it; that is the pathology docs/speed.md names, and
+# it is what full-rss-514 was (full-rss-11b rewrote main.ts's row and this fixture still asserted the old
+# one, which nobody saw because the gate was not running this suite at all - full-rss-q9q).
+row_suites() { awk -F'\t' -v k="$1" '$1 == k { print $2 }' "$MAP" | tr ' ' '\n' | grep -v '^$'; }
+# Every path the map names, on both sides, becomes a real file: then `--changed <key>` works for any key and
+# the "missing suite" check cannot be tripped by a suite this fixture forgot to invent.
+{
+  awk -F'\t' '!/^#/ && $1 !~ /^!/ { print $1 }' "$MAP"
+  awk -F'\t' '!/^#/ && $1 !~ /^!/ { print $2 }' "$MAP" | tr ' ' '\n' | grep -v '^$'
+} | sort -u | while IFS= read -r path; do
+  # Never truncate a file that is already there: the map's own keys include tools/fast-gate.sh, gate.conf and
+  # full-gate.sh, which the fixture copied a moment ago and cases 7-9 exercise.
+  [ -e "$ROOT/repo/$path" ] && continue
+  mkdir -p "$ROOT/repo/$(dirname "$path")"
+  : > "$ROOT/repo/$path"
+done
+# Paths the cases below create themselves, plus a stub for the gate's own suite: this fixture is inside the
+# repo it tests, so a .sh suite that now really runs must not be the real one (it would recurse).
+# `tests/unit/other.test.ts` is deliberately NOT in the map: case 3 uses it to prove that a changed suite maps
+# to itself without a row.
+: > "$ROOT/repo/src/newmodule.ts"; : > "$ROOT/repo/NOTES.txt"; : > "$ROOT/repo/tests/unit/other.test.ts"
+cat > "$ROOT/repo/tools/fast-gate.test.sh" <<'STUBGATE'
+#!/usr/bin/env bash
+echo "STUB-GATE-SUITE ran"
+exit 0
+STUBGATE
+chmod +x "$ROOT/repo/tools/fast-gate.test.sh"
+MAIN_SUITES=$(row_suites main.ts)
+MAIN_FIRST=$(printf '%s\n' "$MAIN_SUITES" | head -1)
+TEMPL_SUITES=$(row_suites templates/index.ts)
+TEMPL_FIRST=$(printf '%s\n' "$TEMPL_SUITES" | head -1)
+[ -n "$MAIN_FIRST" ] && [ -n "$TEMPL_FIRST" ] || {
+  echo "fast-gate tests: the map no longer names main.ts and templates/index.ts; this suite needs both" >&2
+  exit 1
+}
 # Stub runner: records every suite it was asked to run, exits 0 (or 1 when STUB_FAIL=1).
 cat > "$ROOT/runner" <<'STUB'
 #!/usr/bin/env bash
@@ -51,20 +80,25 @@ run_rc() { ( cd "$ROOT/repo" && FAST_GATE_RUNNER="$FAST_GATE_RUNNER" RUN_LOG="$R
 
 echo "fast-gate: selection and fail-loud behaviour"
 
-# 1. a mapped source file selects EVERY suite the map names for it, and runs them.
-#    main.ts is the whole application today and its row names two suites, so this is the real shape.
+# 1. a mapped source file selects EVERY suite the map names for it, and runs them. Both the selection and
+#    the expectations are read from the map, so this case survives a map edit (see row_suites above).
 rm -f "$RUN_LOG"
 out=$(run --changed main.ts)
 rc=$(run_rc --changed main.ts)
-has "$out" "fast-gate: running: tests/unit/feed.test.ts" "1a mapped source selects its first suite"
-has "$out" "fast-gate: running: tests/unit/content.test.ts" "1b ... and every other suite the row names"
-has "$out" "fast-gate: passed: tests/unit/feed.test.ts" "1c a passing suite is reported with the positive marker"
-[ "$rc" = 0 ] && ok "1d exit 0 when every selected suite passes" || bad "1d expected exit 0" "got $rc"
+while IFS= read -r s; do
+  has "$out" "fast-gate: running: $s" "1a main.ts selects $s"
+  has "$out" "fast-gate: passed: $s" "1b $s is reported with the positive marker"
+done <<< "$MAIN_SUITES"
+[ "$rc" = 0 ] && ok "1c exit 0 when every selected suite passes" || bad "1c expected exit 0" "got $rc"
 
-# 1e. a second module's row selects its own suite — the map is per-module, not per-directory.
+# 1d. and it does not select another module's suite: the map is per-module, not per-directory.
 out=$(run --changed templates/index.ts)
-has "$out" "fast-gate: running: tests/unit/index_template.test.ts" "1e templates/index.ts selects its template suite"
-hasnt "$out" "tests/unit/feed.test.ts" "1f ... and not an unrelated module's suite"
+has "$out" "fast-gate: running: $TEMPL_FIRST" "1d templates/index.ts selects $TEMPL_FIRST"
+if [ "$TEMPL_FIRST" = "$MAIN_FIRST" ]; then
+  bad "1e ... and not an unrelated module's suite" "the map names the same suite for both modules"
+else
+  hasnt "$out" "fast-gate: running: $MAIN_FIRST" "1e ... and not main.ts's suite"
+fi
 
 # 2. the fail-loud case: a changed CODE file that maps to nothing. This is the whole point of the gate.
 out=$(run --changed src/newmodule.ts)
@@ -90,15 +124,15 @@ has "$out" "fast-gate: unmapped: NOTES.txt" "4d an unlisted file is still unmapp
 # 5. --list prints the selection and runs nothing.
 rm -f "$RUN_LOG"
 out=$(run --list --changed main.ts)
-has "$out" "tests/unit/feed.test.ts" "5a --list prints the selected suite"
+has "$out" "$MAIN_FIRST" "5a --list prints the selected suite"
 [ ! -s "$RUN_LOG" ] && ok "5b --list runs no suite" || bad "5b --list ran something" "$(cat "$RUN_LOG")"
 
 # 6. a failing suite fails the gate and is not counted as executed.
 STUB_FAIL=1
 out=$(run --changed main.ts)
 rc=$(run_rc --changed main.ts)
-has "$out" "fast-gate: failed: tests/unit/feed.test.ts" "6a a failing suite is reported as failed"
-hasnt "$out" "fast-gate: passed: tests/unit/feed.test.ts" "6b a failing suite is not also reported as passed"
+has "$out" "fast-gate: failed: $MAIN_FIRST" "6a a failing suite is reported as failed"
+hasnt "$out" "fast-gate: passed: $MAIN_FIRST" "6b a failing suite is not also reported as passed"
 [ "$rc" != 0 ] && ok "6c a failing suite exits non-zero" || bad "6c expected non-zero exit" "got $rc"
 STUB_FAIL=0
 
@@ -156,9 +190,65 @@ echo "// staged edit" >> "$ROOT/repo/main.ts"
 git -C "$ROOT/repo" add main.ts
 out=$( cd "$ROOT/repo" && FAST_GATE_RUNNER="$FAST_GATE_RUNNER" RUN_LOG="$RUN_LOG" STUB_FAIL=0 bash "$GATE" 2>&1 )
 rc=$( cd "$ROOT/repo" && FAST_GATE_RUNNER="$FAST_GATE_RUNNER" RUN_LOG="$RUN_LOG" STUB_FAIL=0 bash "$GATE" >/dev/null 2>&1; echo $? )
-has "$out" "fast-gate: running: tests/unit/feed.test.ts" "10a a staged change still selects its suites"
+has "$out" "fast-gate: running: $MAIN_FIRST" "10a a staged change still selects its suites"
 hasnt "$out" "fast-gate: no suites affected" "10b a staged change is not reported as nothing affected"
 [ "$rc" = 0 ] && ok "10c the staged-change run exits 0" || bad "10c expected exit 0" "got $rc"
+
+echo
+# --- 11. a suite that is a SHELL SCRIPT is executed, with bash (full-rss-q9q) ----------------------------
+# The gate handed every selected suite to FAST_GATE_RUNNER, which is `deno test`: deno is given a shell
+# script, runs nothing, exits 0, and the gate printed "passed: tools/fast-gate.test.sh" for a suite it never
+# executed. The suite this file belongs to was that suite. A stub .sh suite is added to the fixture's map.
+printf 'src/shellsuite.sh\ttests/unit/shellsuite.test.sh\n' >> "$ROOT/repo/tools/suite-map.tsv"
+: > "$ROOT/repo/src/shellsuite.sh"
+cat > "$ROOT/repo/tests/unit/shellsuite.test.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "SHELL-SUITE-MARKER"
+[ -n "${SHELL_MARKER:-}" ] && echo ran >> "$SHELL_MARKER"
+exit "${SHELL_SUITE_RC:-0}"
+STUB
+rm -f "$RUN_LOG" "$ROOT/shell.marker"
+out=$(SHELL_MARKER="$ROOT/shell.marker" run --changed src/shellsuite.sh)
+rc=$(SHELL_MARKER="$ROOT/shell.marker" run_rc --changed src/shellsuite.sh)
+[ -s "$ROOT/shell.marker" ] && ok "11a a .sh suite is really executed (it wrote its own marker)" \
+  || bad "11a a .sh suite is really executed" "the suite did not run"
+hasnt "$(cat "$RUN_LOG" 2>/dev/null)" "tests/unit/shellsuite.test.sh" \
+  "11b ... and it did NOT go to the test runner"
+has "$out" "fast-gate: passed: tests/unit/shellsuite.test.sh" "11c a passing .sh suite is reported as passed"
+[ "$rc" = 0 ] && ok "11d ... and the gate exits 0" || bad "11d expected exit 0" "got $rc"
+out=$(SHELL_SUITE_RC=1 run --changed src/shellsuite.sh)
+rc=$(SHELL_SUITE_RC=1 run_rc --changed src/shellsuite.sh)
+has "$out" "fast-gate: failed: tests/unit/shellsuite.test.sh" "11e a failing .sh suite fails the gate"
+has "$out" "SHELL-SUITE-MARKER" "11f ... and its log is shown"
+[ "$rc" != 0 ] && ok "11g ... and the gate exits non-zero" || bad "11g expected non-zero exit" "got $rc"
+
+echo
+# --- 12. a suite that ran NO TESTS is a failure, not a pass (the general form of the bug in 11) ----------
+# `deno test` exits 0 for a file with no test cases, so a suite could be added, mapped, executed, and prove
+# nothing while the gate called it green. The guard reads the runner's own all-zero summary.
+cat > "$ROOT/runner_zero" <<'STUB'
+#!/usr/bin/env bash
+echo "ok | 0 passed | 0 failed (0ms)"
+exit 0
+STUB
+chmod +x "$ROOT/runner_zero"
+: > "$ROOT/repo/tests/unit/zero.test.ts"
+zero_run() { ( cd "$ROOT/repo" && FAST_GATE_RUNNER="$1" bash "$GATE" --changed tests/unit/zero.test.ts 2>&1 ); }
+zero_rc() { ( cd "$ROOT/repo" && FAST_GATE_RUNNER="$1" bash "$GATE" --changed tests/unit/zero.test.ts >/dev/null 2>&1 ); echo $?; }
+out=$(zero_run "$ROOT/runner_zero"); rc=$(zero_rc "$ROOT/runner_zero")
+has "$out" "fast-gate: failed: tests/unit/zero.test.ts" "12a a suite that ran no tests fails the gate"
+hasnt "$out" "fast-gate: passed: tests/unit/zero.test.ts" "12b ... and is not also reported as passed"
+has "$out" "ran no tests" "12c ... and says why"
+[ "$rc" != 0 ] && ok "12d ... and exits non-zero" || bad "12d expected non-zero exit" "got $rc"
+# The guard is not a blanket failure: a runner reporting real counts is untouched by it.
+cat > "$ROOT/runner_some" <<'STUB'
+#!/usr/bin/env bash
+echo "ok | 3 passed | 0 failed (5ms)"
+exit 0
+STUB
+chmod +x "$ROOT/runner_some"
+out=$(zero_run "$ROOT/runner_some")
+has "$out" "fast-gate: passed: tests/unit/zero.test.ts" "12e a suite with tests still passes (the guard is not a blanket failure)"
 
 echo
 if [ "$FAIL" -eq 0 ]; then
