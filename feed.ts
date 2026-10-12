@@ -14,7 +14,7 @@ export const exportFeed = (feed: Feed): string => {
   // Let's just assume RSS.
 
   const parseAuthors = (
-    author: undefined | typeof feed.author
+    author: undefined | typeof feed.author,
   ): [] | [{ name: string; email: string; link?: string }] => {
     if (author == null) {
       return [];

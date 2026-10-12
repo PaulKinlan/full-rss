@@ -59,7 +59,9 @@ const get = (query = ""): Promise<Response> =>
   handleRequest(new Request(`http://localhost/${query}`));
 
 Deno.test("a non-GET request is refused with 405", async () => {
-  const res = await handleRequest(new Request("http://localhost/", { method: "POST" }));
+  const res = await handleRequest(
+    new Request("http://localhost/", { method: "POST" }),
+  );
   assertEqual(res.status, 405, "status");
   assertEqual(await res.text(), "Method not allowed", "body");
 });
@@ -102,7 +104,11 @@ Deno.test("a valid feed comes back as RSS 2.0 with every item", async () => {
     async () => {
       const res = await get("?url=https://example.com/feed.xml");
       assertEqual(res.status, 200, "status");
-      assertEqual(res.headers.get("content-type"), "application/rss+xml", "content type");
+      assertEqual(
+        res.headers.get("content-type"),
+        "application/rss+xml",
+        "content type",
+      );
       const xml = await res.text();
       assertIncludes(xml, "<title>No Links</title>", "the channel title");
       assertIncludes(xml, "<title>Linkless</title>", "the item");
@@ -112,16 +118,27 @@ Deno.test("a valid feed comes back as RSS 2.0 with every item", async () => {
 
 Deno.test("an article that cannot be enriched does not remove its item from the feed", async () => {
   await withStubbedFetch(
-    (url) => new Response(url.includes("feed.xml") ? FEED : "not an article", { status: 200 }),
+    (url) =>
+      new Response(url.includes("feed.xml") ? FEED : "not an article", {
+        status: 200,
+      }),
     async () => {
       // `handleRequest` must not reject even though enriching each article needs KV and a second fetch.
       const res = await get("?url=https://example.com/feed.xml");
       assertEqual(res.status, 200, "status");
       const xml = await res.text();
-      assertIncludes(xml, "<title>Routing Fixture</title>", "the channel title");
+      assertIncludes(
+        xml,
+        "<title>Routing Fixture</title>",
+        "the channel title",
+      );
       assertIncludes(xml, "<title>First</title>", "the first item");
       assertIncludes(xml, "<title>Second</title>", "the second item");
-      assertIncludes(xml, "<link>https://example.com/first</link>", "the first item's link");
+      assertIncludes(
+        xml,
+        "<link>https://example.com/first</link>",
+        "the first item's link",
+      );
     },
   );
 });

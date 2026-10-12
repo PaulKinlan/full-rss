@@ -10,19 +10,37 @@ export function assert(condition: unknown, what: string): void {
 
 export function assertEqual<T>(actual: T, expected: T, what: string): void {
   if (!Object.is(actual, expected)) {
-    throw new Error(`${what}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+    throw new Error(
+      `${what}: expected ${JSON.stringify(expected)}, got ${
+        JSON.stringify(actual)
+      }`,
+    );
   }
 }
 
-export function assertIncludes(haystack: string, needle: string, what?: string): void {
+export function assertIncludes(
+  haystack: string,
+  needle: string,
+  what?: string,
+): void {
   if (!haystack.includes(needle)) {
-    throw new Error(`expected to find ${JSON.stringify(needle)}${what ? ` (${what})` : ""}`);
+    throw new Error(
+      `expected to find ${JSON.stringify(needle)}${what ? ` (${what})` : ""}`,
+    );
   }
 }
 
-export function assertExcludes(haystack: string, needle: string, what?: string): void {
+export function assertExcludes(
+  haystack: string,
+  needle: string,
+  what?: string,
+): void {
   if (haystack.includes(needle)) {
-    throw new Error(`expected NOT to find ${JSON.stringify(needle)}${what ? ` (${what})` : ""}`);
+    throw new Error(
+      `expected NOT to find ${JSON.stringify(needle)}${
+        what ? ` (${what})` : ""
+      }`,
+    );
   }
 }
 
@@ -37,7 +55,9 @@ export async function assertRejects(
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes(messagePart)) {
       throw new Error(
-        `${what}: expected the error to mention ${JSON.stringify(messagePart)}, got ${JSON.stringify(message)}`,
+        `${what}: expected the error to mention ${
+          JSON.stringify(messagePart)
+        }, got ${JSON.stringify(message)}`,
       );
     }
     return;
