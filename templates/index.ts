@@ -17,7 +17,7 @@ const HTML_ESCAPES: Record<string, string> = {
 const escapeHtml = (value: string): string =>
   value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] ?? char);
 
-export const index = async (
+export const index = (
   message: string | undefined
 ) => template`<!DOCTYPE html>
 <html lang="en">

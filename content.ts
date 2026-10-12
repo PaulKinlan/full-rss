@@ -44,27 +44,26 @@ export const convertToMarkdown = (html: string): string => {
       "nav",
       "header",
     ],
-    replacement: function (content: any) {
-      return "";
-    },
+    // These three rules are typed for what they receive: the two "drop this" rules ignore the node's
+    // content entirely, and only the role filter needs the node. `node` is an Element here (a
+    // role attribute lives on elements) and the link rule keeps the text, so its content is a string.
+    replacement: () => "",
   });
 
   turndown.addRule("no-header", {
-    filter: (node: any) => {
+    // `node` is what the DOM implementation hands the rule, and this type-check has no DOM lib (turndown
+    // ships no types either), so the one method the rule uses is typed directly instead of `any`.
+    filter: (node: { getAttribute(name: string): string | null }) => {
       const role = node.getAttribute("role");
 
       return role == "banner" || role == "navigation";
     },
-    replacement: (content: any) => {
-      return "";
-    },
+    replacement: () => "",
   });
 
   turndown.addRule("no-link", {
     filter: ["a"],
-    replacement: function (content: any) {
-      return content;
-    },
+    replacement: (content: string) => content,
   });
 
   const markdown = turndown.turndown(bodyText);
