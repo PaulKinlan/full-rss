@@ -4,11 +4,12 @@
 // these tests pin BOTH the markup the page must keep (the URL form) and the stream contract main.ts depends
 // on (a ReadableStream, not a string — `String(template)` is "[object ReadableStream]").
 //
-// NOTE ON ESCAPING: the interpolated `message` is inserted as raw markup (a nested template is streamed
-// verbatim, not HTML-escaped). It is not currently reachable with attacker-controlled input — every call
-// site in main.ts passes a literal — so this file does not assert on raw markup; the sink is tracked as its
-// own finding rather than frozen into a green test.
-import { assert, assertEqual, assertIncludes } from "../asserts.ts";
+// ESCAPING: the interpolated `message` is HTML-escaped by `templates/index.ts` before it is streamed (the
+// template engine interpolates verbatim, so escaping is the caller's job). It is not reachable with
+// attacker-controlled input today — every call site in main.ts passes a literal — but the escaping is pinned
+// here so that a future caller passing a URL or an upstream error string cannot turn this into reflected XSS
+// (full-rss-2n6, which this file's assertions are the regression test for).
+import { assert, assertEqual, assertExcludes, assertIncludes } from "../asserts.ts";
 import { index } from "../../templates/index.ts";
 
 const render = async (message?: string): Promise<string> =>
@@ -33,4 +34,17 @@ Deno.test("index shows no warning paragraph when there is no message", async () 
 
 Deno.test("index renders the message in the warning paragraph", async () => {
   assertIncludes(await render("Invalid URL parameter."), '<p class="warning">Invalid URL parameter.</p>');
+});
+
+Deno.test("index escapes a message containing markup instead of streaming it as HTML", async () => {
+  const html = await render("<script>alert(1)</script>");
+  assertExcludes(html, "<script>alert(1)</script>", "a raw script tag in the page");
+  assertIncludes(html, "<p class=\"warning\">&lt;script&gt;alert(1)&lt;/script&gt;</p>");
+});
+
+Deno.test("index escapes &, quotes and apostrophes in a message exactly once", async () => {
+  const html = await render(`Tom & Jerry said "hi" to O'Brien`);
+  assertIncludes(html, "Tom &amp; Jerry said &quot;hi&quot; to O&#39;Brien");
+  assertExcludes(html, "&amp;amp;", "double-escaped ampersand");
+  assertExcludes(html, "&amp;quot;", "double-escaped quote");
 });
