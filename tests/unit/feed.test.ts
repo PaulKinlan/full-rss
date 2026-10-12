@@ -53,7 +53,7 @@ const ATOM = `<?xml version="1.0" encoding="utf-8"?>
 const itemCount = (xml: string): number => (xml.match(/<item>/g) ?? []).length;
 
 Deno.test("exportFeed emits RSS 2.0 channel metadata from an RSS 2.0 feed", async () => {
-  const xml = await exportFeed(await parseFeed(RSS));
+  const xml = exportFeed(await parseFeed(RSS));
   assertIncludes(xml, '<rss version="2.0">');
   assertIncludes(xml, "<title>Example Feed</title>");
   assertIncludes(xml, "<description>An example feed</description>");
@@ -61,7 +61,7 @@ Deno.test("exportFeed emits RSS 2.0 channel metadata from an RSS 2.0 feed", asyn
 });
 
 Deno.test("exportFeed carries an RSS item's title, link, guid, date and full content", async () => {
-  const xml = await exportFeed(await parseFeed(RSS));
+  const xml = exportFeed(await parseFeed(RSS));
   assertIncludes(xml, "<title>First Post</title>");
   assertIncludes(xml, "<link>https://example.com/first</link>");
   assertIncludes(xml, "<guid>https://example.com/first</guid>");
@@ -73,14 +73,14 @@ Deno.test("exportFeed carries an RSS item's title, link, guid, date and full con
 });
 
 Deno.test("exportFeed skips an entry that has no title rather than emitting an empty item", async () => {
-  const xml = await exportFeed(await parseFeed(RSS_WITH_UNTITLED_ITEM));
+  const xml = exportFeed(await parseFeed(RSS_WITH_UNTITLED_ITEM));
   assertIncludes(xml, "<title>Has Title</title>");
   assertExcludes(xml, "no-title");
   assert(itemCount(xml) === 1, `exactly one <item>, got ${itemCount(xml)}`);
 });
 
 Deno.test("exportFeed converts an Atom feed into RSS 2.0", async () => {
-  const xml = await exportFeed(await parseFeed(ATOM));
+  const xml = exportFeed(await parseFeed(ATOM));
   assertIncludes(xml, '<rss version="2.0">');
   assertIncludes(xml, "<title>Atom Example</title>");
   assertIncludes(xml, "<title>Atom Post</title>");
@@ -92,8 +92,8 @@ Deno.test("exportFeed converts an Atom feed into RSS 2.0", async () => {
 
 Deno.test("exportFeed is deterministic apart from lastBuildDate", async () => {
   const strip = (xml: string) => xml.replace(/<lastBuildDate>[^<]*<\/lastBuildDate>/g, "");
-  const first = await exportFeed(await parseFeed(RSS));
-  const second = await exportFeed(await parseFeed(RSS));
+  const first = exportFeed(await parseFeed(RSS));
+  const second = exportFeed(await parseFeed(RSS));
   assert(
     strip(first) === strip(second),
     "two exports of the same feed to differ only in lastBuildDate",

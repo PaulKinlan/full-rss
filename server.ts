@@ -54,7 +54,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     const feed = await parseFeed(feedXml);
     const fullFeed = await processFeed(feed);
 
-    return new Response(await exportFeed(fullFeed), {
+    return new Response(exportFeed(fullFeed), {
       headers: { "content-type": "application/rss+xml" },
     });
   } catch (e) {

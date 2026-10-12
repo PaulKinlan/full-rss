@@ -12,6 +12,8 @@
 import { assert, assertEqual, assertExcludes, assertIncludes } from "../asserts.ts";
 import { index } from "../../templates/index.ts";
 
+// `index` returns the template's promise (whatwg-flora-tmpl's tag function is asynchronous), so the awaits
+// here are load-bearing: without them this would put a Promise into the Response.
 const render = async (message?: string): Promise<string> =>
   await new Response(await index(message)).text();
 

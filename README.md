@@ -39,6 +39,10 @@ anything. The fast gate selects suites from `tools/suite-map.tsv` and **fails lo
 maps to no suite, so a new module needs a row there (the file's header explains the rules).
 `fleet-check`/`fleet-check --fast` on the project VM run exactly these two commands (`tools/check.conf`).
 
+The landing gate also runs the static half: `deno check` on every module and `deno lint` over the tree
+(`tools/gate.conf`'s `STATIC_CMD`). `deno fmt --check` is **not** part of the gate: 11 of 13 files are
+unformatted, so reformatting is its own change, to be followed by adding the check.
+
 Unit suites live in `tests/unit/` and boundary (routing) suites in `tests/integration/`
 (`deno test --allow-env tests`). Nothing binds a port or opens KV at import time — `serve()` opens the KV
 handle and `main.ts` only calls it under `import.meta.main` — so every domain function is importable from a

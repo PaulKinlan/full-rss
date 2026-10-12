@@ -10,7 +10,7 @@ import { Rss } from "@feed/feed";
 import { Feed } from "@mikaelporttila/rss";
 import { fetchContent } from "./content.ts";
 
-export const exportFeed = async (feed: Feed): Promise<string> => {
+export const exportFeed = (feed: Feed): string => {
   // Let's just assume RSS.
 
   const parseAuthors = (

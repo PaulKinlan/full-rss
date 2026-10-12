@@ -11,7 +11,7 @@
 // Articles' full content is deliberately NOT asserted here: `fetchContent` reads Deno KV, which the test
 // process does not have (`--unstable-kv` is not part of the gate). Test 6 pins what matters in both worlds —
 // an article that cannot be enriched must not remove the item from the feed.
-import { assert, assertEqual, assertIncludes } from "../asserts.ts";
+import { assertEqual, assertIncludes } from "../asserts.ts";
 import { handleRequest } from "../../server.ts";
 
 const FEED = `<?xml version="1.0" encoding="UTF-8"?>
