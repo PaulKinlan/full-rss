@@ -62,7 +62,7 @@ const parseIPv4 = (host: string): number | null => {
 const IPV4_BLOCKED_RANGES: readonly (readonly [bigint, bigint])[] = [
   [0x00000000n, 0x00ffffffn], // 0.0.0.0/8 "this network"
   [0x0a000000n, 0x0affffffn], // 10.0.0.0/8 private
-  [0x64400000n, 0x657fffffn], // 100.64.0.0/10 carrier-grade NAT
+  [0x64400000n, 0x647fffffn], // 100.64.0.0/10 carrier-grade NAT (through 100.127.255.255)
   [0x7f000000n, 0x7fffffffn], // 127.0.0.0/8 loopback
   [0xa9fe0000n, 0xa9feffffn], // 169.254.0.0/16 link-local (incl. cloud metadata)
   [0xac100000n, 0xac1fffffn], // 172.16.0.0/12 private

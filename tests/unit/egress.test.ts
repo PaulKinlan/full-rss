@@ -92,6 +92,7 @@ Deno.test("private and reserved IPv4 literals are blocked, public ones are not",
     "http://0.0.0.0/",
     "http://10.0.0.5/",
     "http://100.64.0.1/",
+    "http://100.127.255.254/",
     "http://127.0.0.1/",
     "http://169.254.169.254/latest/meta-data/",
     "http://172.16.0.1/",
@@ -129,6 +130,12 @@ Deno.test("private and reserved IPv4 literals are blocked, public ones are not",
       resolveDns: resolver(PUBLIC_A),
     }) != null,
     "100.63.255.255 (just before 100.64/10) to be allowed",
+  );
+  assert(
+    await parseFetchableUrl("http://100.128.0.1/", {
+      resolveDns: resolver(PUBLIC_A),
+    }) != null,
+    "100.128.0.1 (just past 100.64/10) to be allowed",
   );
 });
 

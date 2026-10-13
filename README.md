@@ -65,8 +65,7 @@ so a new module needs a row there (the file's header explains the rules).
 commands (`tools/check.conf`).
 
 The landing gate also runs the static half: `deno check` on every module,
-`deno
-lint` over the tree and `deno fmt --check` (`tools/gate.conf`'s
+`deno lint` over the tree and `deno fmt --check` (`tools/gate.conf`'s
 `STATIC_CMD`). Each of the three was added in the change that made it pass - the
 tree was formatted in one whitespace-only commit (11 of 13 files) before the
 format check joined, and lint went green first - so none of them is a red the
