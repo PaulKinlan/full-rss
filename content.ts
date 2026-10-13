@@ -13,11 +13,21 @@ import { load } from "cheerio";
 import TurndownService from "turndown";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
+import {
+  guardedFetch,
+  parseFetchableUrl,
+  readCappedText,
+  sanitizeForLog,
+} from "./egress.ts";
 
 // Deno KV is opened LAZILY, on first use. Importing this module (a test importing the transform, for
 // instance) must not need KV permissions or a database handle; only serving and fetching do.
 let db: Deno.Kv | undefined;
 const kv = async (): Promise<Deno.Kv> => (db ??= await Deno.openKv());
+
+// The most article we will read, decompressed. An upstream that hands us a giant "article" is refused
+// here rather than buffered into memory (full-rss-apm).
+const MAX_ARTICLE_BYTES = 5 * 1024 * 1024;
 
 // Exported so the entrypoint can open the handle at boot and fail there, loudly, when KV is unavailable -
 // rather than per article inside feed.ts's processFeed error handling, which would silently degrade every
@@ -71,9 +81,10 @@ export const convertToMarkdown = (html: string): string => {
 };
 
 export const fetchContent = async (url: string): Promise<string> => {
-  if (URL.canParse(url) === false) {
-    throw new Error(`Invalid URL ${url}`);
-  }
+  // What we may fetch is egress.ts's decision, not ours: this both keeps the historical "Invalid URL"
+  // contract (the unit suite pins it) and refuses private/local targets before any network or cache work
+  // (full-rss-apm - the second-order SSRF lived in this fetch).
+  const target = await parseFetchableUrl(url);
 
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
   const contentKV = await (await kv()).get([urlHash]);
@@ -81,11 +92,13 @@ export const fetchContent = async (url: string): Promise<string> => {
 
   if (content == null) {
     // Think about queing this later.
-    const newFeed = await fetch(url);
+    const newFeed = await guardedFetch(target);
 
     // We are not going to save the HTML, we are going to convert it to markdown. We will take the encoding, decoding hit.
 
-    const markDown = convertToMarkdown(await newFeed.text());
+    const markDown = convertToMarkdown(
+      await readCappedText(newFeed, MAX_ARTICLE_BYTES),
+    );
 
     const stringStream = new ReadableStream({
       start(controller) {
@@ -119,7 +132,7 @@ export const fetchContent = async (url: string): Promise<string> => {
       totalSize += value.byteLength;
     }
 
-    console.log(url, totalSize);
+    console.log(sanitizeForLog(url), totalSize);
 
     const concatenated = new Uint8Array(totalSize);
     let offset = 0;
