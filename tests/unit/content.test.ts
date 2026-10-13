@@ -74,3 +74,25 @@ Deno.test("fetchContent rejects a URL that cannot be parsed, before any network 
     "fetchContent",
   );
 });
+
+Deno.test("fetchContent refuses a private or local article URL, before any network call", async () => {
+  // The second-order SSRF lived here: an attacker's feed could point an article link at localhost or a
+  // cloud metadata address and this service would fetch it. egress.ts now refuses such targets up front
+  // (full-rss-apm), and no fetch stub is needed to prove it - nothing may be fetched at all.
+  for (
+    const url of [
+      "http://127.0.0.1/articles/1",
+      "http://169.254.169.254/latest/meta-data/",
+      "http://10.0.0.5:8080/inside",
+      "http://[::1]/article",
+      "https://localhost/article",
+      "file:///etc/passwd",
+    ]
+  ) {
+    await assertRejects(
+      () => fetchContent(url),
+      "Blocked URL",
+      `${url} to be refused`,
+    );
+  }
+});

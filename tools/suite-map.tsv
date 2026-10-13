@@ -19,6 +19,7 @@
 # One row per module, so a NEW module is unmapped until its author names the suites that cover it. main.ts is
 # the boot file and content.ts/feed.ts/server.ts are the application (full-rss-11b, the ADR full-rss-7d0).
 main.ts	tests/integration/main.test.ts
+egress.ts	tests/unit/egress.test.ts tests/unit/content.test.ts tests/integration/server.test.ts
 content.ts	tests/unit/content.test.ts
 feed.ts	tests/unit/feed.test.ts
 server.ts	tests/integration/server.test.ts

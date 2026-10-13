@@ -9,6 +9,7 @@
 import { Rss } from "@feed/feed";
 import { Feed } from "@mikaelporttila/rss";
 import { fetchContent } from "./content.ts";
+import { sanitizeForLog } from "./egress.ts";
 
 /*
   RSS 2.0 gives every item its own <author> and <category> elements, and @feed/feed can express neither: its
@@ -207,7 +208,7 @@ export const processFeed = async (feed: Feed): Promise<Feed> => {
       item.content.value = await fetchContent(url);
     } catch (e) {
       // There was an error parsing the content, let's just skip this article rather than nuke the feed.
-      console.error(`Failed to fetch content for ${url}, ${e}`);
+      console.error(sanitizeForLog(`Failed to fetch content for ${url}, ${e}`));
     }
     articleCount++;
   }

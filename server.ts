@@ -11,6 +11,17 @@ import { parseFeed } from "@mikaelporttila/rss";
 import { index } from "./templates/index.ts";
 import { openKv } from "./content.ts";
 import { exportFeed, processFeed } from "./feed.ts";
+import {
+  BlockedUrlError,
+  guardedFetch,
+  parseFetchableUrl,
+  readCappedText,
+  sanitizeForLog,
+} from "./egress.ts";
+
+// The most feed document we will read, decompressed. A feed that arrives larger than this is refused
+// rather than buffered and parsed (full-rss-apm).
+const MAX_FEED_BYTES = 2 * 1024 * 1024;
 
 export const handleRequest = async (req: Request): Promise<Response> => {
   if (req.method !== "GET") {
@@ -27,7 +38,20 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     });
   }
 
-  if (URL.canParse(url) === false) {
+  // What we may fetch is egress.ts's decision: a typo keeps the historical 400, a target this service must
+  // not fetch (private network, localhost, credentials, non-http) gets its own 403 (full-rss-apm).
+  let target: URL;
+  try {
+    target = await parseFetchableUrl(url);
+  } catch (e) {
+    if (e instanceof BlockedUrlError) {
+      return new Response(
+        await index(
+          "This URL cannot be fetched: only public http(s) addresses are supported, not private, local or reserved networks.",
+        ),
+        { status: 403 },
+      );
+    }
     return new Response(
       await index(
         "Invalid URL parameter. Please enter a valid URL e.g, https://paul.kinlan.me/index.xml",
@@ -36,10 +60,35 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     );
   }
 
-  console.log(`Fetching feed from ${url}`);
+  console.log(sanitizeForLog(`Fetching feed from ${url}`));
 
-  const feedResponse = await fetch(url);
-  if (!feedResponse.ok) {
+  // guardedFetch re-validates every redirect hop and bounds each request in time; readCappedText bounds
+  // the document in memory. A timeout, an unreachable host or an oversized feed all land in the catch.
+  let feedXml: string;
+  try {
+    const feedResponse = await guardedFetch(target);
+    if (!feedResponse.ok) {
+      return new Response(
+        await index(
+          "There was an error fetching the feed. Please check the URL",
+        ),
+        {
+          status: 500,
+        },
+      );
+    }
+    feedXml = await readCappedText(feedResponse, MAX_FEED_BYTES);
+  } catch (e) {
+    if (e instanceof BlockedUrlError) {
+      // The feed redirected somewhere this service must not follow.
+      return new Response(
+        await index(
+          "This feed redirected to a URL that cannot be fetched (a private, local or reserved network address).",
+        ),
+        { status: 403 },
+      );
+    }
+    console.error(sanitizeForLog(`Failed to fetch the feed: ${e}`));
     return new Response(
       await index("There was an error fetching the feed. Please check the URL"),
       {
@@ -47,8 +96,6 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       },
     );
   }
-
-  const feedXml = await feedResponse.text();
 
   try {
     const feed = await parseFeed(feedXml);

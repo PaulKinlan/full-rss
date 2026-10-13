@@ -83,6 +83,47 @@ Deno.test("an unusable url is refused with 400 and the warning page", async () =
   );
 });
 
+Deno.test("a url aimed at a private or local target is refused with 403", async () => {
+  // The first-order SSRF: ?url= used to be fetched with a syntax check only. The guard refuses such
+  // targets before any fetch (no stub needed - nothing may be fetched at all), and the boundary answer
+  // is its own status so a requester can tell a typo (400) from a refused target (403).
+  for (
+    const url of [
+      "http://127.0.0.1:8000/inside",
+      "http://169.254.169.254/latest/meta-data/",
+      "http://192.168.1.10/feed.xml",
+      "https://localhost/feed.xml",
+    ]
+  ) {
+    const res = await get(`?url=${encodeURIComponent(url)}`);
+    assertEqual(res.status, 403, `status for ${url}`);
+    assertIncludes(
+      await res.text(),
+      "only public http(s) addresses are supported",
+      "the warning message",
+    );
+  }
+});
+
+Deno.test("a feed that redirects to a private target is refused with 403", async () => {
+  await withStubbedFetch(
+    () =>
+      new Response("", {
+        status: 302,
+        headers: { location: "http://10.0.0.5/admin" },
+      }),
+    async () => {
+      const res = await get("?url=https://example.com/feed.xml");
+      assertEqual(res.status, 403, "status");
+      assertIncludes(
+        await res.text(),
+        "redirected to a URL that cannot be fetched",
+        "the warning message",
+      );
+    },
+  );
+});
+
 Deno.test("a feed that cannot be fetched is a 500 with the warning page", async () => {
   await withStubbedFetch(
     () => new Response("gone", { status: 404 }),
