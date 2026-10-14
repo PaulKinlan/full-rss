@@ -342,9 +342,11 @@ export const guardedFetch = async (
   url: URL | string,
   options?: FetchUrlOptions,
 ): Promise<Response> => {
-  const target = typeof url === "string"
-    ? await parseFetchableUrl(url, options)
-    : url; // a URL object is one this module (or its caller via parseFetchableUrl) already validated
+  // A caller may construct or mutate a URL itself; URL objects are not proof of prior validation.
+  const target = await parseFetchableUrl(
+    typeof url === "string" ? url : url.href,
+    options,
+  );
 
   let current = target;
   for (let hop = 0;; hop++) {
@@ -414,11 +416,15 @@ export const readCappedText = async (
 
 /**
  * One line of attacker-controlled text, safe for a log: control characters (forged log lines, ANSI) are
- * stripped and any userinfo in a URL is masked - "https://user:pass@host/" is not something a log should
- * keep (the factory's log-injection findings at the three fetch call sites).
+ * stripped, userinfo is masked and URL queries/fragments are redacted. Feed and article URLs can carry
+ * API keys even when the hostname is public, including inside exception messages from upstream libraries.
  */
 export const sanitizeForLog = (value: string): string =>
   value
     // \p{Cc} is the control-character class (C0, DEL and C1) - the lint-quiet spelling of the same set.
     .replace(/[\p{Cc}]/gu, "")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@/gi, "$1***@");
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@/gi, "$1***@")
+    // Redact the rest of the log line: incoming URLs are raw, decoded strings, so spaces inside a query
+    // cannot be distinguished from the text after the URL. Stopping at whitespace leaks later parameters.
+    // This also covers invalid URLs quoted in parse errors and fragments without a query.
+    .replace(/[?#].*/s, (tail) => `${tail[0]}[redacted]`);

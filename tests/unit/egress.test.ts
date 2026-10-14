@@ -266,6 +266,36 @@ Deno.test("a direct 200 is returned as-is and fetched with manual redirects and 
   );
 });
 
+Deno.test("a URL object is validated before the first fetch", async () => {
+  let calls = 0;
+  await withStubbedFetch(
+    () => {
+      calls++;
+      return new Response("unexpected");
+    },
+    async () => {
+      for (
+        const raw of [
+          "http://127.0.0.1/private",
+          "http://169.254.169.254/latest/meta-data/",
+          "https://user:password@example.com/",
+          "file:///etc/passwd",
+        ]
+      ) {
+        await assertRejects(
+          () => guardedFetch(new URL(raw)),
+          "Blocked URL",
+          `URL object ${raw} is refused`,
+        );
+      }
+      assertEqual(calls, 0, "no forbidden URL reached fetch");
+      const res = await guardedFetch(new URL("https://example.com/feed.xml"));
+      assertEqual(res.status, 200, "valid URL objects still fetch");
+      assertEqual(calls, 1, "the valid target reached fetch");
+    },
+  );
+});
+
 Deno.test("a public-to-public redirect is followed", async () => {
   await withStubbedFetch(
     (url) =>
@@ -434,5 +464,29 @@ Deno.test("log lines lose control characters and userinfo, and keep the rest", (
     sanitizeForLog("\x1b[31mred\x1b[0m"),
     "red",
     "ANSI escapes gone, text kept",
+  );
+  assertEqual(
+    sanitizeForLog(
+      "Failed for https://example.com/feed?api_key=secret&next=other#token in parser",
+    ),
+    "Failed for https://example.com/feed?[redacted]",
+    "all query values and fragments in an embedded URL are redacted",
+  );
+  assertEqual(
+    sanitizeForLog("Invalid URL not-a-url?access_token=secret"),
+    "Invalid URL not-a-url?[redacted]",
+    "invalid URLs in errors do not reveal query values",
+  );
+  assertEqual(
+    sanitizeForLog(
+      "Fetching feed from https://example.com/feed?q=a b&api_key=SECRET",
+    ),
+    "Fetching feed from https://example.com/feed?[redacted]",
+    "raw URL query whitespace cannot expose later credentials",
+  );
+  assertEqual(
+    sanitizeForLog("Failed for https://example.com/feed#part a&token=SECRET"),
+    "Failed for https://example.com/feed#[redacted]",
+    "raw URL fragment whitespace cannot expose later credentials",
   );
 });
