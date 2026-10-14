@@ -39,9 +39,9 @@ export const index = (
 
   ${message ? template`<p class="warning">${escapeHtml(message)}</p>` : ""}
 
-  <form action="/">
+  <form action="/" toolname="expand-rss-feed" tooldescription="Fetch a public RSS feed and return an RSS feed with the full article contents.">
     <label for="url">Enter the URL of the RSS feed:</label><br>
-    <input type="url" id="url" name="url" required><br><br>
+    <input type="url" id="url" name="url" toolparamdescription="Public HTTP or HTTPS URL of the RSS feed to expand" required><br><br>
     <input type="submit" value="Submit">
   </form>
 
