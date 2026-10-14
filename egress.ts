@@ -424,7 +424,7 @@ export const sanitizeForLog = (value: string): string =>
     // \p{Cc} is the control-character class (C0, DEL and C1) - the lint-quiet spelling of the same set.
     .replace(/[\p{Cc}]/gu, "")
     .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@/gi, "$1***@")
-    // Redact through the next whitespace, not just '&': even unknown parameter names and fragments can
-    // hold credentials. The same rule covers invalid URLs quoted in parse errors.
-    .replace(/\?[^\s]*/g, "?[redacted]")
-    .replace(/#[^\s]*/g, "#[redacted]");
+    // Redact the rest of the log line: incoming URLs are raw, decoded strings, so spaces inside a query
+    // cannot be distinguished from the text after the URL. Stopping at whitespace leaks later parameters.
+    // This also covers invalid URLs quoted in parse errors and fragments without a query.
+    .replace(/[?#].*/s, (tail) => `${tail[0]}[redacted]`);

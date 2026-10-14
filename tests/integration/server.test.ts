@@ -150,11 +150,11 @@ Deno.test("feed URL and fetch-error logs redact query credentials", async () => 
     await withStubbedFetch(
       () => {
         throw new Error(
-          `upstream failed https://example.com/feed?token=${secret}`,
+          `upstream failed https://example.com/feed?q=a b&token=${secret}`,
         );
       },
       async () => {
-        const url = `https://example.com/feed?api_key=${secret}`;
+        const url = `https://example.com/feed?q=a b&api_key=${secret}`;
         const res = await get(`?url=${encodeURIComponent(url)}`);
         assertEqual(res.status, 500, "fetch error status");
       },
@@ -207,7 +207,7 @@ Deno.test("article enrichment errors do not log article query credentials", asyn
       () =>
         new Response(FEED.replace(
           "https://example.com/first",
-          "https://example.com/first?token=article-secret-123",
+          "https://example.com/first?q=a b&amp;token=article-secret-123",
         )),
       async () => {
         const res = await get("?url=https://example.com/feed.xml");
