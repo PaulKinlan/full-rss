@@ -32,11 +32,15 @@ Deno.test("index returns a ReadableStream, which is what main.ts puts in a Respo
 
 Deno.test("index renders the feed-URL form and the page heading", async () => {
   const html = await render(undefined);
-  assertIncludes(html, '<form action="/">', "the URL form");
   assertIncludes(
     html,
-    '<input type="url" id="url" name="url" required>',
-    "the URL input",
+    '<form action="/" toolname="expand-rss-feed" tooldescription="Fetch a public RSS feed and return an RSS feed with the full article contents.">',
+    "the URL form exposes a descriptive WebMCP tool without changing its native GET action",
+  );
+  assertIncludes(
+    html,
+    '<input type="url" id="url" name="url" toolparamdescription="Public HTTP or HTTPS URL of the RSS feed to expand" required>',
+    "the URL input has an agent-readable parameter description and remains required",
   );
   assertIncludes(
     html,

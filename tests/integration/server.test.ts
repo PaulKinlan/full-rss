@@ -70,7 +70,11 @@ Deno.test("no url renders the index page", async () => {
   const res = await get();
   assertEqual(res.status, 200, "status");
   assertEqual(res.headers.get("content-type"), "text/html", "content type");
-  assertIncludes(await res.text(), '<form action="/">', "the URL form");
+  assertIncludes(
+    await res.text(),
+    '<form action="/" toolname="expand-rss-feed"',
+    "the native GET form advertises its WebMCP tool",
+  );
 });
 
 Deno.test("an unusable url is refused with 400 and the warning page", async () => {
