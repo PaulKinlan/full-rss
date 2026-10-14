@@ -105,7 +105,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       headers: { "content-type": "application/rss+xml" },
     });
   } catch (e) {
-    console.error(e);
+    console.error(sanitizeForLog(`Failed to parse feed or item: ${e}`));
     return new Response(
       await index(
         "There was an error parsing the feed or an item in the feed. Please check the URL is a valid feed",

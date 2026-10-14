@@ -139,6 +139,94 @@ Deno.test("a feed that cannot be fetched is a 500 with the warning page", async 
   );
 });
 
+Deno.test("feed URL and fetch-error logs redact query credentials", async () => {
+  const log = console.log;
+  const error = console.error;
+  const lines: string[] = [];
+  console.log = (...parts) => lines.push(parts.join(" "));
+  console.error = (...parts) => lines.push(parts.join(" "));
+  try {
+    const secret = "feed-secret-123";
+    await withStubbedFetch(
+      () => {
+        throw new Error(
+          `upstream failed https://example.com/feed?token=${secret}`,
+        );
+      },
+      async () => {
+        const url = `https://example.com/feed?api_key=${secret}`;
+        const res = await get(`?url=${encodeURIComponent(url)}`);
+        assertEqual(res.status, 500, "fetch error status");
+      },
+    );
+    assertIncludes(lines.join("\n"), "?[redacted]", "query removed from logs");
+    if (lines.join("\n").includes(secret)) {
+      throw new Error("feed secret leaked to logs");
+    }
+  } finally {
+    console.log = log;
+    console.error = error;
+  }
+});
+
+Deno.test("a parse error is logged as one sanitized line", async () => {
+  const error = console.error;
+  const lines: string[] = [];
+  console.error = (...parts) => lines.push(parts.join(" "));
+  try {
+    await withStubbedFetch(
+      () =>
+        new Response(
+          "not an XML feed\r\nEVIL: forged line ?token=parse-secret-123",
+        ),
+      async () => {
+        const res = await get("?url=https://example.com/feed.xml");
+        assertEqual(res.status, 500, "parse error status");
+      },
+    );
+    assertIncludes(
+      lines.join("\n"),
+      "Failed to parse feed or item:",
+      "parse error logged",
+    );
+    if (lines.join("\n").includes("parse-secret-123")) {
+      throw new Error("parse secret leaked to logs");
+    }
+    assertEqual(lines.length, 1, "parse error occupies one log line");
+  } finally {
+    console.error = error;
+  }
+});
+
+Deno.test("article enrichment errors do not log article query credentials", async () => {
+  const error = console.error;
+  const lines: string[] = [];
+  console.error = (...parts) => lines.push(parts.join(" "));
+  try {
+    await withStubbedFetch(
+      () =>
+        new Response(FEED.replace(
+          "https://example.com/first",
+          "https://example.com/first?token=article-secret-123",
+        )),
+      async () => {
+        const res = await get("?url=https://example.com/feed.xml");
+        assertEqual(
+          res.status,
+          200,
+          "feed survives article enrichment failure",
+        );
+      },
+    );
+    assertIncludes(lines.join("\n"), "?[redacted]", "article query removed");
+    if (lines.join("\n").includes("article-secret-123")) {
+      throw new Error("article secret leaked to logs");
+    }
+  } finally {
+    console.error = error;
+  }
+});
+
 Deno.test("a valid feed comes back as RSS 2.0 with every item", async () => {
   await withStubbedFetch(
     () => new Response(FEED_WITHOUT_LINKS, { status: 200 }),
