@@ -145,7 +145,22 @@ Deno.test("the aggregate request deadline aborts the upstream fetch and returns 
       20,
     );
     assertEqual(res.status, 504, "deadline status");
-    assertIncludes(await res.text(), "timed out", "timeout response");
+    assertEqual(
+      res.headers.get("content-type"),
+      "text/html",
+      "timeout page content type",
+    );
+    const html = await res.text();
+    assertIncludes(
+      html,
+      '<p class="warning">This feed took too long',
+      "timeout warning",
+    );
+    assertIncludes(
+      html,
+      '<form action="/" toolname="expand-rss-feed"',
+      "retry form",
+    );
     assertEqual(aborted, true, "outbound fetch was aborted");
   } finally {
     globalThis.fetch = original;
