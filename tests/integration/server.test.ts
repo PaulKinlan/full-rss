@@ -128,6 +128,30 @@ Deno.test("a feed that redirects to a private target is refused with 403", async
   );
 });
 
+Deno.test("the aggregate request deadline aborts the upstream fetch and returns 504", async () => {
+  const original = globalThis.fetch;
+  let aborted = false;
+  globalThis.fetch =
+    ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      })) as typeof globalThis.fetch;
+  try {
+    const res = await handleRequest(
+      new Request("http://localhost/?url=https://example.com/feed.xml"),
+      20,
+    );
+    assertEqual(res.status, 504, "deadline status");
+    assertIncludes(await res.text(), "timed out", "timeout response");
+    assertEqual(aborted, true, "outbound fetch was aborted");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 Deno.test("a feed that cannot be fetched is a 500 with the warning page", async () => {
   await withStubbedFetch(
     () => new Response("gone", { status: 404 }),

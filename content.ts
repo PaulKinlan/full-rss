@@ -80,19 +80,24 @@ export const convertToMarkdown = (html: string): string => {
   return `# ${title}\n\n${markdown}`;
 };
 
-export const fetchContent = async (url: string): Promise<string> => {
+export const fetchContent = async (
+  url: string,
+  signal?: AbortSignal,
+  store?: Pick<Deno.Kv, "get" | "set">,
+): Promise<string> => {
   // What we may fetch is egress.ts's decision, not ours: this both keeps the historical "Invalid URL"
   // contract (the unit suite pins it) and refuses private/local targets before any network or cache work
   // (full-rss-apm - the second-order SSRF lived in this fetch).
   const target = await parseFetchableUrl(url);
 
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
-  const contentKV = await (await kv()).get([urlHash]);
+  const cache = store ?? await kv();
+  const contentKV = await cache.get([urlHash]);
   let content: Uint8Array = contentKV?.value as Uint8Array;
 
   if (content == null) {
     // Think about queing this later.
-    const newFeed = await guardedFetch(target);
+    const newFeed = await guardedFetch(target, { signal });
 
     // We are not going to save the HTML, we are going to convert it to markdown. We will take the encoding, decoding hit.
 
@@ -144,9 +149,14 @@ export const fetchContent = async (url: string): Promise<string> => {
 
     content = concatenated;
 
-    (await kv()).set([urlHash], content, {
-      expireIn: 60 * 1000, // 60 seconds
-    });
+    // Cache failures must not lose an otherwise successfully converted article or become unhandled rejections.
+    try {
+      await cache.set([urlHash], content, {
+        expireIn: 60 * 1000, // 60 seconds
+      });
+    } catch (e) {
+      console.error(sanitizeForLog(`Failed to cache article: ${e}; ${url}`));
+    }
   }
 
   // decompress the content

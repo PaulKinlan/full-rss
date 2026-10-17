@@ -67,6 +67,42 @@ Deno.test("convertToMarkdown converts headings to markdown", () => {
   assertExcludes(markdown, "<h1>");
 });
 
+Deno.test("a failed cache write still returns converted article without an unhandled rejection", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const errors: string[] = [];
+  const url = "https://example.com/post?token=secret-value";
+  globalThis.fetch =
+    ((_input: string | URL | Request) =>
+      Promise.resolve(new Response(PAGE))) as typeof globalThis.fetch;
+  console.error = (...parts) => errors.push(parts.join(" "));
+  const store = {
+    get: () => Promise.resolve({ value: null }),
+    set: () => Promise.reject(new Error("cache write failed")),
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  try {
+    const html = await fetchContent(url, undefined, store);
+    assertIncludes(
+      html,
+      "Hello world.",
+      "converted article survives cache failure",
+    );
+    assertIncludes(
+      errors.join("\n"),
+      "cache write failed",
+      "failure is logged",
+    );
+    assertExcludes(
+      errors.join("\n"),
+      "secret-value",
+      "cache error hides query secret",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
+});
+
 Deno.test("fetchContent rejects a URL that cannot be parsed, before any network call", async () => {
   await assertRejects(
     () => fetchContent("not a url"),
