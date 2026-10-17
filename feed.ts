@@ -182,10 +182,14 @@ export const exportFeed = (feed: Feed): string => {
 /*
   Process the feed and attempt to get the full content of each article.
 */
-export const processFeed = async (feed: Feed): Promise<Feed> => {
+export const processFeed = async (
+  feed: Feed,
+  signal?: AbortSignal,
+): Promise<Feed> => {
   const MAX_ARTICLES = 10;
   let articleCount = 0;
   for (const item of feed.entries) {
+    signal?.throwIfAborted();
     if (articleCount >= MAX_ARTICLES) {
       // only process the first 10 articles
       break;
@@ -205,9 +209,10 @@ export const processFeed = async (feed: Feed): Promise<Feed> => {
     }
 
     try {
-      item.content.value = await fetchContent(url);
+      item.content.value = await fetchContent(url, signal);
     } catch (e) {
       // There was an error parsing the content, let's just skip this article rather than nuke the feed.
+      if (signal?.aborted) throw e;
       console.error(sanitizeForLog(`Failed to fetch content for ${url}, ${e}`));
     }
     articleCount++;

@@ -203,7 +203,7 @@ const resolveForValidation: ResolveDns = async (hostname) => {
 // --- URL validation -------------------------------------------------------------------------------------
 
 /** Options are for the suites: an explicit resolver is always consulted, permission gate or not. */
-export type FetchUrlOptions = { resolveDns?: ResolveDns };
+export type FetchUrlOptions = { resolveDns?: ResolveDns; signal?: AbortSignal };
 
 /**
  * Parse a URL this service may fetch, or throw. An unparseable input throws `Error("Invalid URL ...")` -
@@ -226,7 +226,7 @@ export const parseFetchableUrl = async (
     throw new BlockedUrlError(`${url.host} carries credentials`);
   }
 
-  const host = url.hostname.toLowerCase();
+  const host = url.hostname.toLowerCase().replace(/\.+$/, "");
   // IPv6 hosts arrive bracketed ("[::1]" - brackets are part of the WHATWG hostname serialisation), so
   // the checks below see the bracketless form; brackets are only legal around IPv6 literals.
   const address = host.startsWith("[") && host.endsWith("]")
@@ -350,9 +350,16 @@ export const guardedFetch = async (
 
   let current = target;
   for (let hop = 0;; hop++) {
+    options?.signal?.throwIfAborted();
+    const signal = options?.signal == null
+      ? AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      : AbortSignal.any([
+        options.signal,
+        AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      ]);
     const response = await fetch(current, {
       redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal,
     });
     if (REDIRECT_STATUSES.has(response.status) === false) {
       return response;

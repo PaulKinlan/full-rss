@@ -22,8 +22,14 @@ import {
 // The most feed document we will read, decompressed. A feed that arrives larger than this is refused
 // rather than buffered and parsed (full-rss-apm).
 const MAX_FEED_BYTES = 2 * 1024 * 1024;
+// The full feed, including DNS, redirects, body reads and up to ten sequential article expansions,
+// has one budget in addition to each outbound fetch's per-hop timeout.
+const REQUEST_TIMEOUT_MS = 30_000;
 
-export const handleRequest = async (req: Request): Promise<Response> => {
+const handleFeedRequest = async (
+  req: Request,
+  signal: AbortSignal,
+): Promise<Response> => {
   if (req.method !== "GET") {
     return new Response("Method not allowed", { status: 405 });
   }
@@ -66,7 +72,8 @@ export const handleRequest = async (req: Request): Promise<Response> => {
   // the document in memory. A timeout, an unreachable host or an oversized feed all land in the catch.
   let feedXml: string;
   try {
-    const feedResponse = await guardedFetch(target);
+    signal.throwIfAborted();
+    const feedResponse = await guardedFetch(target, { signal });
     if (!feedResponse.ok) {
       return new Response(
         await index(
@@ -99,7 +106,9 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
   try {
     const feed = await parseFeed(feedXml);
-    const fullFeed = await processFeed(feed);
+    signal.throwIfAborted();
+    const fullFeed = await processFeed(feed, signal);
+    signal.throwIfAborted();
 
     return new Response(exportFeed(fullFeed), {
       headers: { "content-type": "application/rss+xml" },
@@ -117,10 +126,39 @@ export const handleRequest = async (req: Request): Promise<Response> => {
   }
 };
 
+export const handleRequest = async (
+  req: Request,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Response> => {
+  // The home page and method rejection do no upstream work; only expansion needs a deadline.
+  if (req.method !== "GET" || !new URL(req.url).searchParams.get("url")) {
+    return handleFeedRequest(req, new AbortController().signal);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+  let onAbort: (() => void) | undefined;
+  const expired = new Promise<Response>((resolve) => {
+    onAbort = () =>
+      resolve(new Response("Feed processing timed out", { status: 504 }));
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    // Racing bounds even non-cancellable work (DNS, KV, parsing). The losing promise remains observed,
+    // so a late failure cannot become an unhandled rejection.
+    return await Promise.race([
+      handleFeedRequest(req, controller.signal),
+      expired,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener("abort", onAbort!);
+  }
+};
+
 export const serve = async (): Promise<void> => {
   // Open the KV handle at boot and only at boot: an unavailable KV must fail here, loudly, instead of
   // failing per article inside processFeed's error handling (which would silently degrade every feed to
   // summaries only).
   await openKv();
-  Deno.serve(handleRequest);
+  Deno.serve((req) => handleRequest(req));
 };

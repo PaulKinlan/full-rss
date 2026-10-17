@@ -185,7 +185,16 @@ Deno.test("local names are blocked before any DNS lookup", async () => {
     return Promise.resolve(PUBLIC_A);
   };
   for (
-    const host of ["localhost", "box.localhost", "nas.local", "api.internal"]
+    const host of [
+      "localhost",
+      "box.localhost",
+      "nas.local",
+      "api.internal",
+      "localhost.",
+      "box.localhost.",
+      "nas.local.",
+      "api.internal..",
+    ]
   ) {
     await assertRejects(
       () => parseFetchableUrl(`https://${host}/`, { resolveDns: spy }),
@@ -193,7 +202,10 @@ Deno.test("local names are blocked before any DNS lookup", async () => {
       `${host} to be blocked`,
     );
   }
-  assert(resolved === false, "no DNS lookup for syntactically local names");
+  assert(
+    resolved === false,
+    "no DNS lookup for syntactically local names, including trailing dots",
+  );
 });
 
 Deno.test("a name resolving to a private address is blocked, mixed answers included", async () => {
