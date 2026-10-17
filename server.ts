@@ -137,9 +137,19 @@ export const handleRequest = async (
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
   let onAbort: (() => void) | undefined;
-  const expired = new Promise<Response>((resolve) => {
-    onAbort = () =>
-      resolve(new Response("Feed processing timed out", { status: 504 }));
+  const expired = new Promise<Response>((resolve, reject) => {
+    onAbort = () => {
+      Promise.resolve(
+        index("This feed took too long to process. Please try again."),
+      )
+        .then((page) =>
+          resolve(
+            new Response(page, {
+              status: 504,
+              headers: { "content-type": "text/html" },
+            }),
+          ), reject);
+    };
     controller.signal.addEventListener("abort", onAbort, { once: true });
   });
   try {
