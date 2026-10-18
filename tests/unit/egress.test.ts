@@ -252,6 +252,42 @@ Deno.test("a failing or empty resolver blocks the name (fail closed)", async () 
   );
 });
 
+Deno.test("a missing DNS API fails closed when outbound networking is available", async () => {
+  // Model a runtime without resolveDns but with net permission; no actual lookup or fetch is performed.
+  const dns = Object.getOwnPropertyDescriptor(Deno, "resolveDns");
+  const permission = Object.getOwnPropertyDescriptor(
+    Deno.permissions,
+    "querySync",
+  );
+  Object.defineProperty(Deno, "resolveDns", {
+    configurable: true,
+    value: undefined,
+  });
+  Object.defineProperty(Deno.permissions, "querySync", {
+    configurable: true,
+    value: () => ({ state: "granted" }),
+  });
+  try {
+    await assertRejects(
+      () => parseFetchableUrl("https://public-looking.example/feed"),
+      "cannot be validated without DNS",
+      "a public-looking name without DNS validation",
+    );
+    // Literal addresses still go through their own classification without needing DNS.
+    assertEqual(
+      (await parseFetchableUrl("https://93.184.216.34/feed")).hostname,
+      "93.184.216.34",
+      "a public literal remains fetchable",
+    );
+  } finally {
+    if (dns) Object.defineProperty(Deno, "resolveDns", dns);
+    else Reflect.deleteProperty(Deno, "resolveDns");
+    if (permission) {
+      Object.defineProperty(Deno.permissions, "querySync", permission);
+    } else Reflect.deleteProperty(Deno.permissions, "querySync");
+  }
+});
+
 Deno.test("the default resolver's DNS layer is skipped without net permission", async () => {
   // The unit and integration suites run under `deno test --allow-env`: no net permission, so egress is
   // impossible and the default resolver's permission gate must skip the DNS layer rather than fail every
