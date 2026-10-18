@@ -26,6 +26,23 @@ const MAX_FEED_BYTES = 2 * 1024 * 1024;
 // has one budget in addition to each outbound fetch's per-hop timeout.
 const REQUEST_TIMEOUT_MS = 30_000;
 
+// Every rendered page (including errors and the deadline retry page) uses the same policy. The index has
+// one inline style and no scripts; allow that style without allowing any script or external resource.
+const HTML_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "content-security-policy":
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+};
+
+const htmlResponse = async (
+  message: string | undefined,
+  status = 200,
+): Promise<Response> =>
+  new Response(await index(message), { status, headers: HTML_HEADERS });
+
 const handleFeedRequest = async (
   req: Request,
   signal: AbortSignal,
@@ -38,10 +55,7 @@ const handleFeedRequest = async (
   const url = searchParams.get("url");
 
   if (!url) {
-    return new Response(await index(undefined), {
-      status: 200,
-      headers: { "content-type": "text/html" },
-    });
+    return htmlResponse(undefined);
   }
 
   // What we may fetch is egress.ts's decision: a typo keeps the historical 400, a target this service must
@@ -51,18 +65,14 @@ const handleFeedRequest = async (
     target = await parseFetchableUrl(url);
   } catch (e) {
     if (e instanceof BlockedUrlError) {
-      return new Response(
-        await index(
-          "This URL cannot be fetched: only public http(s) addresses are supported, not private, local or reserved networks.",
-        ),
-        { status: 403 },
+      return htmlResponse(
+        "This URL cannot be fetched: only public http(s) addresses are supported, not private, local or reserved networks.",
+        403,
       );
     }
-    return new Response(
-      await index(
-        "Invalid URL parameter. Please enter a valid URL e.g, https://paul.kinlan.me/index.xml",
-      ),
-      { status: 400 },
+    return htmlResponse(
+      "Invalid URL parameter. Please enter a valid URL e.g, https://paul.kinlan.me/index.xml",
+      400,
     );
   }
 
@@ -75,32 +85,24 @@ const handleFeedRequest = async (
     signal.throwIfAborted();
     const feedResponse = await guardedFetch(target, { signal });
     if (!feedResponse.ok) {
-      return new Response(
-        await index(
-          "There was an error fetching the feed. Please check the URL",
-        ),
-        {
-          status: 500,
-        },
+      return htmlResponse(
+        "There was an error fetching the feed. Please check the URL",
+        500,
       );
     }
     feedXml = await readCappedText(feedResponse, MAX_FEED_BYTES);
   } catch (e) {
     if (e instanceof BlockedUrlError) {
       // The feed redirected somewhere this service must not follow.
-      return new Response(
-        await index(
-          "This feed redirected to a URL that cannot be fetched (a private, local or reserved network address).",
-        ),
-        { status: 403 },
+      return htmlResponse(
+        "This feed redirected to a URL that cannot be fetched (a private, local or reserved network address).",
+        403,
       );
     }
     console.error(sanitizeForLog(`Failed to fetch the feed: ${e}`));
-    return new Response(
-      await index("There was an error fetching the feed. Please check the URL"),
-      {
-        status: 500,
-      },
+    return htmlResponse(
+      "There was an error fetching the feed. Please check the URL",
+      500,
     );
   }
 
@@ -115,13 +117,9 @@ const handleFeedRequest = async (
     });
   } catch (e) {
     console.error(sanitizeForLog(`Failed to parse feed or item: ${e}`));
-    return new Response(
-      await index(
-        "There was an error parsing the feed or an item in the feed. Please check the URL is a valid feed",
-      ),
-      {
-        status: 500,
-      },
+    return htmlResponse(
+      "There was an error parsing the feed or an item in the feed. Please check the URL is a valid feed",
+      500,
     );
   }
 };
@@ -139,16 +137,8 @@ export const handleRequest = async (
   let onAbort: (() => void) | undefined;
   const expired = new Promise<Response>((resolve, reject) => {
     onAbort = () => {
-      Promise.resolve(
-        index("This feed took too long to process. Please try again."),
-      )
-        .then((page) =>
-          resolve(
-            new Response(page, {
-              status: 504,
-              headers: { "content-type": "text/html" },
-            }),
-          ), reject);
+      htmlResponse("This feed took too long to process. Please try again.", 504)
+        .then(resolve, reject);
     };
     controller.signal.addEventListener("abort", onAbort, { once: true });
   });

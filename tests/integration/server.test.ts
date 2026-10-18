@@ -58,6 +58,30 @@ async function withStubbedFetch(
 const get = (query = ""): Promise<Response> =>
   handleRequest(new Request(`http://localhost/${query}`));
 
+const assertHtmlHeaders = (res: Response): void => {
+  assertEqual(
+    res.headers.get("content-type"),
+    "text/html; charset=utf-8",
+    "HTML content type",
+  );
+  assertEqual(
+    res.headers.get("content-security-policy"),
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "restrictive CSP with working local form and inline style",
+  );
+  assertEqual(
+    res.headers.get("x-content-type-options"),
+    "nosniff",
+    "MIME sniffing disabled",
+  );
+  assertEqual(res.headers.get("x-frame-options"), "DENY", "framing disabled");
+  assertEqual(
+    res.headers.get("referrer-policy"),
+    "no-referrer",
+    "no referrer leakage",
+  );
+};
+
 Deno.test("a non-GET request is refused with 405", async () => {
   const res = await handleRequest(
     new Request("http://localhost/", { method: "POST" }),
@@ -69,7 +93,7 @@ Deno.test("a non-GET request is refused with 405", async () => {
 Deno.test("no url renders the index page", async () => {
   const res = await get();
   assertEqual(res.status, 200, "status");
-  assertEqual(res.headers.get("content-type"), "text/html", "content type");
+  assertHtmlHeaders(res);
   assertIncludes(
     await res.text(),
     '<form action="/" toolname="expand-rss-feed"',
@@ -80,6 +104,7 @@ Deno.test("no url renders the index page", async () => {
 Deno.test("an unusable url is refused with 400 and the warning page", async () => {
   const res = await get("?url=not-a-url");
   assertEqual(res.status, 400, "status");
+  assertHtmlHeaders(res);
   assertIncludes(
     await res.text(),
     '<p class="warning">Invalid URL parameter.',
@@ -101,6 +126,7 @@ Deno.test("a url aimed at a private or local target is refused with 403", async 
   ) {
     const res = await get(`?url=${encodeURIComponent(url)}`);
     assertEqual(res.status, 403, `status for ${url}`);
+    assertHtmlHeaders(res);
     assertIncludes(
       await res.text(),
       "only public http(s) addresses are supported",
@@ -119,6 +145,7 @@ Deno.test("a feed that redirects to a private target is refused with 403", async
     async () => {
       const res = await get("?url=https://example.com/feed.xml");
       assertEqual(res.status, 403, "status");
+      assertHtmlHeaders(res);
       assertIncludes(
         await res.text(),
         "redirected to a URL that cannot be fetched",
@@ -145,11 +172,7 @@ Deno.test("the aggregate request deadline aborts the upstream fetch and returns 
       20,
     );
     assertEqual(res.status, 504, "deadline status");
-    assertEqual(
-      res.headers.get("content-type"),
-      "text/html",
-      "timeout page content type",
-    );
+    assertHtmlHeaders(res);
     const html = await res.text();
     assertIncludes(
       html,
@@ -173,6 +196,7 @@ Deno.test("a feed that cannot be fetched is a 500 with the warning page", async 
     async () => {
       const res = await get("?url=https://example.com/feed.xml");
       assertEqual(res.status, 500, "status");
+      assertHtmlHeaders(res);
       assertIncludes(
         await res.text(),
         "There was an error fetching the feed",
@@ -225,6 +249,7 @@ Deno.test("a parse error is logged as one sanitized line", async () => {
       async () => {
         const res = await get("?url=https://example.com/feed.xml");
         assertEqual(res.status, 500, "parse error status");
+        assertHtmlHeaders(res);
       },
     );
     assertIncludes(
@@ -280,6 +305,11 @@ Deno.test("a valid feed comes back as RSS 2.0 with every item", async () => {
         res.headers.get("content-type"),
         "application/rss+xml",
         "content type",
+      );
+      assertEqual(
+        res.headers.get("content-security-policy"),
+        null,
+        "RSS is not an HTML page",
       );
       const xml = await res.text();
       assertIncludes(xml, "<title>No Links</title>", "the channel title");

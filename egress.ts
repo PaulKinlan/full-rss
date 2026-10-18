@@ -174,8 +174,8 @@ const isBlockedName = (host: string): boolean =>
 //   * the resolve and the fetch are two lookups, so a server that answers the second query differently
 //     (DNS rebinding) still gets a window - closing that needs pinning the connection to the checked IP,
 //     which this runtime's fetch cannot express;
-//   * when the API or the permission to resolve is missing, the layer is skipped rather than the service
-//     bricked - the syntactic and redirect checks remain in force.
+//   * without net permission the DNS layer is skipped (the process cannot fetch anyway); with net
+//     permission a missing resolver fails closed rather than allowing unchecked hostnames.
 
 export type ResolveDns = (hostname: string) => Promise<string[]>;
 
@@ -280,24 +280,23 @@ export const parseFetchableUrl = async (
     return url;
   }
 
-  // The default resolver: consulted only when this process can actually fetch (the unit suites run without
-  // net permission, and there egress is impossible anyway). Missing API or missing answers elsewhere fail
-  // closed - but a runtime without resolveDns skips the layer rather than refusing every feed.
-  if (
-    typeof Deno.resolveDns === "function" && netPermissionGranted()
-  ) {
-    let answers: string[];
-    try {
-      answers = await resolveForValidation(address);
-    } catch (e) {
-      throw new BlockedUrlError(
-        `${address} could not be resolved (${
-          e instanceof Error ? e.message : String(e)
-        })`,
-      );
-    }
-    assertAnswersFetchable(address, answers);
+  // No net permission means fetch itself is impossible (and keeps offline tests network-free). If egress
+  // is available, a missing DNS API must not silently bypass the private-address check.
+  if (!netPermissionGranted()) return url;
+  if (typeof Deno.resolveDns !== "function") {
+    throw new BlockedUrlError(`${address} cannot be validated without DNS`);
   }
+  let answers: string[];
+  try {
+    answers = await resolveForValidation(address);
+  } catch (e) {
+    throw new BlockedUrlError(
+      `${address} could not be resolved (${
+        e instanceof Error ? e.message : String(e)
+      })`,
+    );
+  }
+  assertAnswersFetchable(address, answers);
   return url;
 };
 
