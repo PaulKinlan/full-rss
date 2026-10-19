@@ -8,8 +8,20 @@
 
 import { Rss } from "@feed/feed";
 import { Feed } from "@mikaelporttila/rss";
+import sanitizeHtml from "sanitize-html";
 import { fetchContent } from "./content.ts";
 import { sanitizeForLog } from "./egress.ts";
+
+/*
+  Feed-supplied markup is untrusted input on its way to a reader: an item whose article expansion was
+  skipped (no link, or past MAX_ARTICLES) or fell back after a fetch error carries the publisher's raw HTML
+  into content:encoded and description, and a feed reader renders that HTML. Expanded articles pass through
+  sanitize-html in content.ts already; run every item through the same defaults here at the single export
+  boundary, so the guarantee does not depend on which path filled the item (full-rss-9vl). sanitize-html is
+  idempotent under a fixed config, so the already-sanitized expanded content is unchanged by the second pass.
+*/
+const sanitizeFeedHtml = (html: string | undefined): string =>
+  sanitizeHtml(html ?? "");
 
 /*
   RSS 2.0 gives every item its own <author> and <category> elements, and @feed/feed can express neither: its
@@ -149,7 +161,7 @@ export const exportFeed = (feed: Feed): string => {
       continue;
     }
 
-    const content = entry.content?.value || "";
+    const content = sanitizeFeedHtml(entry.content?.value);
 
     const links = entry.links?.map((link) => link.href) || [];
 
@@ -160,7 +172,7 @@ export const exportFeed = (feed: Feed): string => {
     rssFeed.addItemWithMetadata(
       {
         title: entry.title?.value || "",
-        description: entry.description?.value || "",
+        description: sanitizeFeedHtml(entry.description?.value),
         link: links[0] || "",
         id: entry.id || "",
         updated: date,

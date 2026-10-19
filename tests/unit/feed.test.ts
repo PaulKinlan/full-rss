@@ -98,6 +98,42 @@ const ATOM_WITH_AUTHOR = `<?xml version="1.0" encoding="utf-8"?>
 
 const itemCount = (xml: string): number => (xml.match(/<item>/g) ?? []).length;
 
+/*
+  Feed-supplied markup is untrusted (full-rss-9vl): an item whose article expansion is skipped or falls back
+  carries the publisher's raw HTML into content:encoded and description, and a feed reader renders it. The
+  export boundary sanitizes both with the same defaults content.ts applies to expanded articles.
+*/
+const RSS_WITH_UNSAFE_CONTENT = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Unsafe Feed</title>
+    <link>https://example.com/</link>
+    <item>
+      <title>Unsafe Post</title>
+      <link>https://example.com/unsafe</link>
+      <guid>https://example.com/unsafe</guid>
+      <pubDate>Mon, 06 Oct 2025 10:00:00 GMT</pubDate>
+      <description><![CDATA[<p onclick="alert(1)">Summary</p><script>alert(2)</script>]]></description>
+      <content:encoded><![CDATA[<p onclick="alert(1)">Safe text</p><script>alert(2)</script><img src="https://example.com/x.png" onerror="alert(3)"><a href="javascript:alert(4)">click</a><iframe src="https://evil.example/"></iframe>]]></content:encoded>
+    </item>
+  </channel>
+</rss>`;
+
+Deno.test("exportFeed sanitizes feed-supplied content:encoded and description", async () => {
+  const xml = exportFeed(await parseFeed(RSS_WITH_UNSAFE_CONTENT));
+  // The safe markup survives (escaped, as every item body is). Images do not: the default allowlist has
+  // no <img>, which matches the expanded-article path (content.ts's markdown rules drop images too).
+  assertIncludes(xml, "&lt;p&gt;Safe text&lt;/p&gt;");
+  assertIncludes(xml, "&lt;a&gt;click&lt;/a&gt;");
+  // Scripts, event handlers, javascript: URLs, iframes and images do not — in content or in description.
+  assertExcludes(xml, "<script");
+  assertExcludes(xml, "onclick");
+  assertExcludes(xml, "onerror");
+  assertExcludes(xml, "javascript:");
+  assertExcludes(xml, "<img");
+  assertExcludes(xml, "iframe");
+});
+
 Deno.test("exportFeed emits RSS 2.0 channel metadata from an RSS 2.0 feed", async () => {
   const xml = exportFeed(await parseFeed(RSS));
   assertIncludes(xml, '<rss version="2.0">');
