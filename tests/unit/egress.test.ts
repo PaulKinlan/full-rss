@@ -99,6 +99,7 @@ Deno.test("private and reserved IPv4 literals are blocked, public ones are not",
     "http://172.31.255.254/",
     "http://192.0.0.1/",
     "http://192.0.2.1/",
+    "http://192.88.99.1/", // 6to4 relay anycast
     "http://192.168.1.1/",
     "http://198.18.0.1/",
     "http://198.51.100.1/",
@@ -147,10 +148,19 @@ Deno.test("private and reserved IPv6 literals are blocked, public ones are not",
     "http://[::1]/",
     "http://[::ffff:127.0.0.1]/",
     "http://[::ffff:10.0.0.1]/",
+    // IPv4-translated (::ffff:0:0:0/96): "::ffff:0:127.0.0.1" parses as ::ffff:0:7f00:1, which is the
+    // same loopback address reached through the RFC 2765 form.
+    "http://[::ffff:0:127.0.0.1]/",
+    "http://[::ffff:0:7f00:1]/",
+    "http://[::ffff:0:169.254.169.254]/",
     "http://[fe80::1]/",
+    "http://[fec0::1]/", // deprecated site-local
+    "http://[fec0:1::1]/",
     "http://[fc00::1]/",
     "http://[fd12:3456:789a::1]/",
     "http://[2001:db8::1]/",
+    "http://[2001:2::1]/", // benchmarking
+    "http://[2001:2:0:1::1]/",
     "http://[ff02::1]/",
     "http://[64:ff9b::127.0.0.1]/",
     "http://[2002:0a00:0001::1]/", // 6to4 of 10.0.0.1
@@ -176,6 +186,20 @@ Deno.test("private and reserved IPv6 literals are blocked, public ones are not",
     }) != null,
     "a global unicast IPv6 address to be allowed",
   );
+  // The neighbours of the newly reserved ranges must stay fetchable.
+  for (
+    const url of [
+      "http://192.88.98.1/",
+      "http://192.88.100.1/",
+      "http://[2001:3::1]/",
+      "http://[::ffff:0:8.8.8.8]/",
+    ]
+  ) {
+    assert(
+      await parseFetchableUrl(url, { resolveDns: resolver(PUBLIC_A) }) != null,
+      `${url} to be allowed`,
+    );
+  }
 });
 
 Deno.test("local names are blocked before any DNS lookup", async () => {
