@@ -68,6 +68,7 @@ const IPV4_BLOCKED_RANGES: readonly (readonly [bigint, bigint])[] = [
   [0xac100000n, 0xac1fffffn], // 172.16.0.0/12 private
   [0xc0000000n, 0xc00000ffn], // 192.0.0.0/24 IETF protocol assignments
   [0xc0000200n, 0xc00002ffn], // 192.0.2.0/24 TEST-NET-1
+  [0xc0586300n, 0xc05863ffn], // 192.88.99.0/24 6to4 relay anycast (deprecated)
   [0xc0a80000n, 0xc0a8ffffn], // 192.168.0.0/16 private
   [0xc6120000n, 0xc613ffffn], // 198.18.0.0/15 benchmarking
   [0xc6336400n, 0xc63364ffn], // 198.51.100.0/24 TEST-NET-2
@@ -120,13 +121,21 @@ const parseIPv6 = (host: string): number[] | null => {
 };
 
 const ipv6ToV4 = (groups: number[]): bigint | null => {
-  // The embedded IPv4 of a mapped (::ffff:0:0/96), compatible (::x.y.z.w, deprecated but parsed), NAT64
-  // (64:ff9b::/96) or 6to4 (2002::/16) address, as one 32-bit value.
+  // The embedded IPv4 of a mapped (::ffff:0:0/96), translated (::ffff:0:0:0/96), compatible (::x.y.z.w,
+  // deprecated but parsed), NAT64 (64:ff9b::/96) or 6to4 (2002::/16) address, as one 32-bit value.
   const tail = (groups[6] ?? 0) * 65536 + (groups[7] ?? 0);
   if (
     groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff
   ) {
     return BigInt(tail); // IPv4-mapped
+  }
+  if (
+    groups.slice(0, 4).every((group) => group === 0) &&
+    groups[4] === 0xffff && groups[5] === 0
+  ) {
+    // IPv4-translated (::ffff:0:0:0/96, RFC 2765): "[::ffff:0:127.0.0.1]" parses as ::ffff:0:7f00:1 and
+    // reaches loopback just like the mapped form does.
+    return BigInt(tail);
   }
   if (groups.slice(0, 6).every((group) => group === 0) && tail !== 0) {
     return BigInt(tail); // IPv4-compatible
@@ -149,8 +158,12 @@ const isBlockedIPv6 = (groups: number[]): boolean => {
     groups[0] === 0x0100 && groups.slice(1, 4).every((group) => group === 0)
   ) return true; // 100::/64
   if (groups[0] === 0x2001 && groups[1] === 0x0db8) return true; // 2001:db8::/32 documentation
+  if (
+    groups[0] === 0x2001 && groups[1] === 0x0002 && groups[2] === 0
+  ) return true; // 2001:2::/48 benchmarking
   if ((groups[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
   if ((groups[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((groups[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local
   if ((groups[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
   const embedded = ipv6ToV4(groups);
   if (embedded != null && isBlockedIPv4(embedded)) return true; // mapped/compatible/NAT64/6to4

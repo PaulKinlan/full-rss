@@ -48,11 +48,13 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   we see it (`0x7f000001`, `2130706433`, `127.1` all arrive as `127.0.0.1`), so
   only the canonical dotted-quad and IPv6 shapes need parsing. Blocked IPv4:
   `0.0.0.0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16` (cloud metadata),
-  `172.16/12`, `192.0.0/24`, `192.0.2/24`, `192.168/16`, `198.18/15`,
-  `198.51.100/24`, `203.0.113/24`, `224/4`, `240/4`. Blocked IPv6: `::`, `::1`,
-  `100::/64`, `2001:db8::/32`, `fc00::/7`, `fe80::/10`, `ff00::/8`, and any
-  IPv4-embedded form (mapped, compatible, NAT64 `64:ff9b::/96`, 6to4
-  `2002::/16`) whose embedded address is blocked;
+  `172.16/12`, `192.0.0/24`, `192.0.2/24`, `192.88.99/24` (6to4 relay anycast),
+  `192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, `224/4`, `240/4`.
+  Blocked IPv6: `::`, `::1`, `100::/64`, `2001:2::/48` (benchmarking),
+  `2001:db8::/32`, `fc00::/7`, `fe80::/10`, `fec0::/10` (deprecated site-local),
+  `ff00::/8`, and any IPv4-embedded form (mapped `::ffff:0:0/96`, translated
+  `::ffff:0:0:0/96`, compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) whose
+  embedded address is blocked;
 - **names meaning "here"** — `localhost`, `*.localhost`, `local`, `internal` —
   before DNS is consulted.
 
@@ -117,8 +119,11 @@ with `default-src 'none'` CSP (one inline style allowed), `nosniff`,
 `frame-ancestors 'none'`/`X-Frame-Options: DENY`, and
 `referrer-policy:
 no-referrer`. The feed itself is served as
-`application/rss+xml`. A whole-request 30-second deadline bounds the full
-feed+articles pipeline and renders the retry page on expiry.
+`application/rss+xml` with `default-src 'none'; frame-ancestors 'none'`,
+`nosniff`, `X-Frame-Options: DENY` and `referrer-policy: no-referrer`, so a
+browser that opens the feed directly cannot sniff or frame it either. A
+whole-request 30-second deadline bounds the full feed+articles pipeline and
+renders the retry page on expiry.
 
 ## Accepted residuals
 

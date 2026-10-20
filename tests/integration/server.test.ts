@@ -308,8 +308,23 @@ Deno.test("a valid feed comes back as RSS 2.0 with every item", async () => {
       );
       assertEqual(
         res.headers.get("content-security-policy"),
-        null,
-        "RSS is not an HTML page",
+        "default-src 'none'; frame-ancestors 'none'",
+        "the RSS document is not a script, style or frame context",
+      );
+      assertEqual(
+        res.headers.get("x-content-type-options"),
+        "nosniff",
+        "MIME sniffing disabled on the feed",
+      );
+      assertEqual(
+        res.headers.get("x-frame-options"),
+        "DENY",
+        "the feed cannot frame this service",
+      );
+      assertEqual(
+        res.headers.get("referrer-policy"),
+        "no-referrer",
+        "no referrer leakage from the feed",
       );
       const xml = await res.text();
       assertIncludes(xml, "<title>No Links</title>", "the channel title");

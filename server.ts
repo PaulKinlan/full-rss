@@ -37,6 +37,17 @@ const HTML_HEADERS = {
   "referrer-policy": "no-referrer",
 };
 
+// The RSS document is served to feed readers, so it carries no HTML policy - but it still leaves this origin,
+// and a browser that opens it directly must not sniff it into something executable or frame this service.
+// Same reason as HTML_HEADERS: the factory's feed-response finding (full-rss-bxs).
+const FEED_HEADERS = {
+  "content-type": "application/rss+xml",
+  "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+};
+
 const htmlResponse = async (
   message: string | undefined,
   status = 200,
@@ -112,9 +123,7 @@ const handleFeedRequest = async (
     const fullFeed = await processFeed(feed, signal);
     signal.throwIfAborted();
 
-    return new Response(exportFeed(fullFeed), {
-      headers: { "content-type": "application/rss+xml" },
-    });
+    return new Response(exportFeed(fullFeed), { headers: FEED_HEADERS });
   } catch (e) {
     console.error(sanitizeForLog(`Failed to parse feed or item: ${e}`));
     return htmlResponse(
