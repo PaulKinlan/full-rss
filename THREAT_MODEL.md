@@ -53,8 +53,12 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   Blocked IPv6: `::`, `::1`, `100::/64`, `2001:2::/48` (benchmarking),
   `2001:db8::/32`, `fc00::/7`, `fe80::/10`, `fec0::/10` (deprecated site-local),
   `ff00::/8`, and any IPv4-embedded form (mapped `::ffff:0:0/96`, translated
-  `::ffff:0:0:0/96`, compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) whose
-  embedded address is blocked;
+  `::ffff:0:0:0/96`, compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, Teredo
+  `2001::/32`) whose embedded address is blocked. A Teredo address carries the
+  client IPv4 in bits 96..127 **inverted** (`2001:0:...:3fff:fdd2` tunnels to
+  `192.0.2.45`), so the check complements those bits before classifying them;
+  reading them literally would refuse every client below `240.0.0.0/4` (8.8.8.8
+  is stored `f7f7:f7f7`) instead of the private ones.
 - **names meaning "here"** — `localhost`, `*.localhost`, `local`, `internal` —
   before DNS is consulted.
 
@@ -84,11 +88,15 @@ the fetch, as does an empty answer set. Fail-closed everywhere:
 - `guardedFetch` re-validates even a `URL` object it is handed — a `URL` is not
   proof of prior validation.
 
-### `readCappedText` — memory bound
+### `readCappedStream` / `readCappedText` — memory bound
 
 Response bodies are read with a byte cap measured by what is actually consumed
 (2 MB feeds, 5 MB articles), not by a claimed `Content-Length`; exceeding the
-cap cancels the reader and throws.
+cap cancels the reader and throws. `readCappedStream` takes the stream so the
+same budget bounds a **decompressed** body: the KV cache holds gzip, and a few
+kilobytes of it can expand to gigabytes (a decompression bomb), so `content.ts`
+pipes its `DecompressionStream` through the same 5 MB cap rather than calling
+`.text()` on it.
 
 ### `sanitizeForLog`
 
@@ -156,4 +164,7 @@ Known limits that are accepted deliberately:
 A change that adds a new outbound fetch, a new place feed-supplied text enters
 the output, or a new logged value must update this document in the same change,
 and `egress.ts` remains the only egress point: new fetches go through
-`guardedFetch`, never `fetch` directly.
+`guardedFetch`, never `fetch` directly. That last rule is not a convention any
+more — `tools/single-egress.sh` fails the build when any `*.ts` file outside
+`egress.ts` (and outside `tests/`, which stubs `globalThis.fetch` on purpose)
+references the platform fetch, and it runs in both gate tiers.
