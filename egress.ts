@@ -122,7 +122,8 @@ const parseIPv6 = (host: string): number[] | null => {
 
 const ipv6ToV4 = (groups: number[]): bigint | null => {
   // The embedded IPv4 of a mapped (::ffff:0:0/96), translated (::ffff:0:0:0/96), compatible (::x.y.z.w,
-  // deprecated but parsed), NAT64 (64:ff9b::/96) or 6to4 (2002::/16) address, as one 32-bit value.
+  // deprecated but parsed), NAT64 (64:ff9b::/96), 6to4 (2002::/16) or Teredo (2001::/32) address, as one
+  // 32-bit value.
   const tail = (groups[6] ?? 0) * 65536 + (groups[7] ?? 0);
   if (
     groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff
@@ -146,6 +147,13 @@ const ipv6ToV4 = (groups: number[]): bigint | null => {
   if (groups[0] === 0x2002) {
     return BigInt(groups[1] * 65536 + groups[2]); // 6to4
   }
+  if (groups[0] === 0x2001 && groups[1] === 0) {
+    // Teredo (2001::/32, RFC 4380): 2001:0000:<server IPv4>:<flags + port>:<client IPv4>. The client
+    // address in bits 96..127 is stored as its bitwise COMPLEMENT, so the address the relay forwards to is
+    // 0xffffffff - tail. Reading the stored bits instead would flag every client below 240.0.0.0/4 - 8.8.8.8
+    // is stored as f7f7:f7f7 - and block a mechanism rather than a destination.
+    return BigInt(0xffffffff - tail);
+  }
   return null;
 };
 
@@ -166,7 +174,7 @@ const isBlockedIPv6 = (groups: number[]): boolean => {
   if ((groups[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local
   if ((groups[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
   const embedded = ipv6ToV4(groups);
-  if (embedded != null && isBlockedIPv4(embedded)) return true; // mapped/compatible/NAT64/6to4
+  if (embedded != null && isBlockedIPv4(embedded)) return true; // mapped/compatible/NAT64/6to4/Teredo
   return false;
 };
 
@@ -398,18 +406,19 @@ export const guardedFetch = async (
 };
 
 /**
- * Read a response body as text, refusing to buffer more than maxBytes of it. The factory's
- * unbounded-buffering finding: an upstream could hand this service an arbitrarily large "article" and eat
- * memory; now the read is capped by what is actually consumed, not by what a Content-Length claims.
+ * Read a byte stream as text, refusing to buffer more than maxBytes of it. The factory's unbounded-buffering
+ * finding: an upstream could hand this service an arbitrarily large "article" and eat memory; now the read
+ * is capped by what is actually consumed, not by what a Content-Length claims.
+ *
+ * Takes a stream rather than a Response because the same budget has to bound a DECOMPRESSED body too: a
+ * small gzip blob can expand without limit, so content.ts pipes its DecompressionStream through here
+ * (full-rss-sc4).
  */
-export const readCappedText = async (
-  response: Response,
+export const readCappedStream = async (
+  stream: ReadableStream<Uint8Array>,
   maxBytes: number,
 ): Promise<string> => {
-  if (response.body == null) {
-    return response.text();
-  }
-  const reader = response.body.getReader();
+  const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
@@ -432,6 +441,15 @@ export const readCappedText = async (
   }
   return new TextDecoder().decode(merged);
 };
+
+/** Read a response body as text under a byte budget. See readCappedStream. */
+export const readCappedText = (
+  response: Response,
+  maxBytes: number,
+): Promise<string> =>
+  response.body == null
+    ? response.text()
+    : readCappedStream(response.body, maxBytes);
 
 /**
  * One line of attacker-controlled text, safe for a log: control characters (forged log lines, ANSI) are

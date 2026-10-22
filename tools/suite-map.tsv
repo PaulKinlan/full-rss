@@ -18,12 +18,16 @@
 # --- source -> every suite that covers it --------------------------------------------------------------
 # One row per module, so a NEW module is unmapped until its author names the suites that cover it. main.ts is
 # the boot file and content.ts/feed.ts/server.ts are the application (full-rss-11b, the ADR full-rss-7d0).
-main.ts	tests/integration/main.test.ts
-egress.ts	tests/unit/egress.test.ts tests/unit/content.test.ts tests/integration/server.test.ts tests/unit/feed.test.ts
-content.ts	tests/unit/content.test.ts
-feed.ts	tests/unit/feed.test.ts
-server.ts	tests/integration/server.test.ts
-templates/index.ts	tests/unit/index_template.test.ts
+#
+# TOOLS_SINGLE_EGRESS is on every application module's row, not just egress.ts: the invariant it enforces is
+# "nothing outside egress.ts reaches the network", so the change that breaks it is a change to ANY of these
+# files. The check is one find + grep, so its cost in the fast gate is noise (full-rss-sc4).
+main.ts	tests/integration/main.test.ts tools/single-egress.test.sh
+egress.ts	tests/unit/egress.test.ts tests/unit/content.test.ts tests/integration/server.test.ts tests/unit/feed.test.ts tools/single-egress.test.sh
+content.ts	tests/unit/content.test.ts tools/single-egress.test.sh
+feed.ts	tests/unit/feed.test.ts tools/single-egress.test.sh
+server.ts	tests/integration/server.test.ts tools/single-egress.test.sh
+templates/index.ts	tests/unit/index_template.test.ts tools/single-egress.test.sh
 tests/asserts.ts	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts tests/integration/server.test.ts tests/integration/main.test.ts
 
 # --- the gate itself is code, and it has its own suite -------------------------------------------------
@@ -31,6 +35,9 @@ tools/fast-gate.sh	tools/fast-gate.test.sh
 tools/suite-map.tsv	tools/fast-gate.test.sh
 tools/gate.conf	tools/fast-gate.test.sh
 tools/check.conf	tools/fast-gate.test.sh
+# The single-egress lint is code too: its detector has a suite, and editing the lint runs that suite.
+tools/single-egress.sh	tools/single-egress.test.sh
+tools/single-egress.test.sh	tools/single-egress.test.sh
 # The full-gate wrapper is what the merger and CI run, so tools/fast-gate.test.sh exercises its two steps
 # (with stub commands) as well as the fast gate's selection. Editing the suite itself maps to itself.
 tools/full-gate.sh	tools/fast-gate.test.sh

@@ -5,8 +5,9 @@
 // keep-the-link-text-drop-the-href rule. `fetchContent` is the network + KV path; only its pure,
 // network-free contract (URL validation) is asserted here.
 //
-// Not covered: the KV read/compression path in `fetchContent` needs a live Deno KV and a network fetch, so
-// it is exercised against the deployed service rather than in a unit suite.
+// Not covered: a live Deno KV and a real network fetch, so the KV read/compression path is exercised against
+// the deployed service rather than in a unit suite. The cache READ path is covered offline through the
+// injectable `store` - the decompression budget in particular (full-rss-sc4).
 import {
   assert,
   assertExcludes,
@@ -101,6 +102,29 @@ Deno.test("a failed cache write still returns converted article without an unhan
     globalThis.fetch = originalFetch;
     console.error = originalError;
   }
+});
+
+Deno.test("a cached article that decompresses past the byte cap is refused", async () => {
+  // content.ts caches gzip, and the read back used to be an unbounded `.text()`: a few kilobytes in KV could
+  // expand to gigabytes in memory, undoing the cap the fetch itself enforces. The decompressed text is now
+  // read under the same 5 MiB budget (full-rss-sc4). Fixture: 5 MiB + 1 of zeroes, which gzips to ~5 kB.
+  const CAPPED_BYTES = 5 * 1024 * 1024;
+  const gzipped = new Uint8Array(
+    await new Response(
+      new Blob([new Uint8Array(CAPPED_BYTES + 1)]).stream().pipeThrough(
+        new CompressionStream("gzip"),
+      ),
+    ).arrayBuffer(),
+  );
+  const store = {
+    get: () => Promise.resolve({ value: gzipped }),
+    set: () => Promise.resolve({ ok: true }),
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  await assertRejects(
+    () => fetchContent("https://example.com/huge", undefined, store),
+    `exceeds the ${CAPPED_BYTES}-byte budget`,
+    "a cached article that expands past the cap",
+  );
 });
 
 Deno.test("fetchContent rejects a URL that cannot be parsed, before any network call", async () => {

@@ -17,6 +17,7 @@ import {
 import {
   guardedFetch,
   parseFetchableUrl,
+  readCappedStream,
   readCappedText,
   sanitizeForLog,
 } from "../../egress.ts";
@@ -200,6 +201,44 @@ Deno.test("private and reserved IPv6 literals are blocked, public ones are not",
       `${url} to be allowed`,
     );
   }
+});
+
+Deno.test("Teredo addresses are judged by the client IPv4 they carry, which is stored inverted", async () => {
+  // 2001:0000:<server IPv4>:<flags + port>:<client IPv4, bitwise NOT> (RFC 4380). The last 32 bits are the
+  // complement of the client address, so a checker that read the stored bits literally would block every
+  // client below 240.0.0.0/4 instead of the private ones (full-rss-sc4).
+  for (
+    const [url, why] of [
+      // RFC 4380's own example: stored 3fff:fdd2 is client 192.0.2.45, TEST-NET-1.
+      ["http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/", "documentation range"],
+      // Stored f5ff:fffa is client 10.0.0.5.
+      ["http://[2001:0:4136:e378:8000:63bf:f5ff:fffa]/", "private range"],
+      // Stored ff00:0001 is client 0.0.255.254, "this network".
+      ["http://[2001:0:4136:e378:8000:63bf:ff00:0001]/", "this-network range"],
+    ] as const
+  ) {
+    await assertRejects(
+      () => parseFetchableUrl(url, { resolveDns: resolver(PUBLIC_A) }),
+      "Blocked URL",
+      `a Teredo address whose client IPv4 is in the ${why} to be blocked`,
+    );
+  }
+  // Stored f7f7:f7f7 is client 8.8.8.8. It is also inside 240.0.0.0/4 as stored, which is exactly why the
+  // stored bits must not be tested: doing so would refuse a public Teredo tunnel to a public address.
+  assert(
+    await parseFetchableUrl("http://[2001:0:4136:e378:8000:63bf:f7f7:f7f7]/", {
+      resolveDns: resolver(PUBLIC_A),
+    }) != null,
+    "a Teredo address tunnelling to a public IPv4 to be allowed",
+  );
+  // The prefix check must stay narrow: 2001:2::/48 benchmarking and 2001:db8::/32 documentation are not
+  // Teredo, and neither are the global unicast addresses just past it.
+  assert(
+    await parseFetchableUrl("http://[2001:1::1]/", {
+      resolveDns: resolver(PUBLIC_A),
+    }) != null,
+    "2001:1::/32 (past the Teredo prefix) to be allowed",
+  );
 });
 
 Deno.test("local names are blocked before any DNS lookup", async () => {
@@ -511,6 +550,28 @@ Deno.test("a body over the budget is refused, not buffered", async () => {
     () => readCappedText(new Response("x".repeat(4096)), 1024),
     "exceeds the 1024-byte budget",
     "an oversized body",
+  );
+});
+
+Deno.test("a decompression bomb is refused by the same budget", async () => {
+  // The cached-article path (content.ts) hands a DecompressionStream to readCappedStream, so the budget has
+  // to hold on the DECOMPRESSED bytes: 8 KiB of zeroes gzips to a few dozen bytes (full-rss-sc4).
+  const gzipped = await new Response(
+    new Blob([new Uint8Array(8192)]).stream().pipeThrough(
+      new CompressionStream("gzip"),
+    ),
+  ).arrayBuffer();
+  assert(
+    gzipped.byteLength < 200,
+    `the fixture to be small compressed (got ${gzipped.byteLength} bytes)`,
+  );
+  const decompressed = new Response(gzipped).body!.pipeThrough(
+    new DecompressionStream("gzip"),
+  );
+  await assertRejects(
+    () => readCappedStream(decompressed, 1024),
+    "exceeds the 1024-byte budget",
+    "a body that only exceeds the budget after decompression",
   );
 });
 

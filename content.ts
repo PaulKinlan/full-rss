@@ -16,6 +16,7 @@ import sanitizeHtml from "sanitize-html";
 import {
   guardedFetch,
   parseFetchableUrl,
+  readCappedStream,
   readCappedText,
   sanitizeForLog,
 } from "./egress.ts";
@@ -93,7 +94,11 @@ export const fetchContent = async (
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
   const cache = store ?? await kv();
   const contentKV = await cache.get([urlHash]);
-  let content: Uint8Array = contentKV?.value as Uint8Array;
+  // Typed with an explicit ArrayBuffer: the value is fed back to `new Response(...)` below, and a
+  // Uint8Array over a (possibly shared) ArrayBufferLike is not a valid BodyInit.
+  let content: Uint8Array<ArrayBuffer> = contentKV?.value as Uint8Array<
+    ArrayBuffer
+  >;
 
   if (content == null) {
     // Think about queing this later.
@@ -159,15 +164,14 @@ export const fetchContent = async (
     }
   }
 
-  // decompress the content
-  const newContent = await new Response(
-    new ReadableStream({
-      pull(controller) {
-        controller.enqueue(content);
-        controller.close();
-      },
-    }).pipeThrough(new DecompressionStream("gzip")),
-  ).text();
+  // Decompress the content, under the SAME budget as the fetch above (full-rss-sc4): the cache holds gzip,
+  // and a cache entry is not trusted input - a few kilobytes of gzip can expand to gigabytes (a
+  // decompression bomb), so an unbounded `.text()` here would undo the fetch-side cap. `Response` is just
+  // the adapter that turns the cached bytes into a byte stream; nothing here touches the network.
+  const newContent = await readCappedStream(
+    new Response(content).body!.pipeThrough(new DecompressionStream("gzip")),
+    MAX_ARTICLE_BYTES,
+  );
 
   return sanitizeHtml(marked.parse(newContent));
 };
