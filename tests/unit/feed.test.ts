@@ -4,9 +4,14 @@
 // tests pin the parts of that contract a reader depends on (channel title/description/link, and per-item
 // title, link, guid, date and escaped full content) for both input dialects the README claims: RSS 2.0 and
 // Atom. The fixtures are inline strings — no network, no files, no shared state.
-import { assert, assertExcludes, assertIncludes } from "../asserts.ts";
+import {
+  assert,
+  assertEqual,
+  assertExcludes,
+  assertIncludes,
+} from "../asserts.ts";
 import { parseFeed } from "@mikaelporttila/rss";
-import { exportFeed } from "../../feed.ts";
+import { exportFeed, processFeed } from "../../feed.ts";
 
 const RSS = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
@@ -235,4 +240,70 @@ Deno.test("exportFeed emits no author or category element when an entry has neit
   assertExcludes(xml, "<author>");
   assertExcludes(xml, "<category>");
   assert(itemCount(xml) === 1, `exactly one <item>, got ${itemCount(xml)}`);
+});
+
+/*
+  Feed expansion may not point back at the service doing the expanding (full-rss-qxz). A feed whose items link
+  to this service's own endpoint turns one request into an unbounded tree of them, and none of the address
+  checks catch it because the target is public - it is us.
+
+  The link here carries no query on purpose: sanitizeForLog redacts everything after a '?' (a query can hold a
+  credential), so a query-bearing self URL would hide the refusal reason this test asserts. That the redaction
+  keeps working is egress.test.ts's business; this test is about the item's fate.
+*/
+const RSS_LINKING_TO_SELF = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Amplifier</title>
+    <link>https://example.com/</link>
+    <item>
+      <title>Loop</title>
+      <link>https://service.test/expand</link>
+      <guid>loop</guid>
+      <description>Summary survives</description>
+    </item>
+  </channel>
+</rss>`;
+
+Deno.test("processFeed refuses an item that links back at this service, and keeps the item", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const lines: string[] = [];
+  let fetched = 0;
+  globalThis.fetch = ((_input: string | URL | Request) => {
+    fetched++;
+    return Promise.resolve(new Response("unexpected"));
+  }) as typeof globalThis.fetch;
+  console.error = (...parts) => lines.push(parts.join(" "));
+  try {
+    const feed = await processFeed(
+      await parseFeed(RSS_LINKING_TO_SELF),
+      undefined,
+      {
+        selfOrigins: ["https://service.test"],
+      },
+    );
+    assertEqual(fetched, 0, "the self-referential item was never fetched");
+    // The item itself survives with the publisher's summary, the same fallback any expansion failure gets.
+    assertEqual(feed.entries.length, 1, "the item is still in the feed");
+    assertEqual(
+      feed.entries[0].content?.value,
+      undefined,
+      "no expanded content was set",
+    );
+    assertEqual(
+      feed.entries[0].description?.value,
+      "Summary survives",
+      "the feed's own summary is kept",
+    );
+    // And the reason logged is the egress refusal, not some later accident.
+    assertIncludes(
+      lines.join("\n"),
+      "this service's own address",
+      "the refusal is what skipped the item",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
 });

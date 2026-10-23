@@ -10,7 +10,7 @@ import { Rss } from "@feed/feed";
 import { Feed } from "@mikaelporttila/rss";
 import sanitizeHtml from "sanitize-html";
 import { fetchContent } from "./content.ts";
-import { sanitizeForLog } from "./egress.ts";
+import { type FetchUrlOptions, sanitizeForLog } from "./egress.ts";
 
 /*
   Feed-supplied markup is untrusted input on its way to a reader: an item whose article expansion was
@@ -197,6 +197,7 @@ export const exportFeed = (feed: Feed): string => {
 export const processFeed = async (
   feed: Feed,
   signal?: AbortSignal,
+  egressOptions?: FetchUrlOptions,
 ): Promise<Feed> => {
   const MAX_ARTICLES = 10;
   let articleCount = 0;
@@ -221,7 +222,12 @@ export const processFeed = async (
     }
 
     try {
-      item.content.value = await fetchContent(url, signal);
+      item.content.value = await fetchContent(
+        url,
+        signal,
+        undefined,
+        egressOptions,
+      );
     } catch (e) {
       // There was an error parsing the content, let's just skip this article rather than nuke the feed.
       if (signal?.aborted) throw e;

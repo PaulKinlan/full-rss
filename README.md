@@ -45,10 +45,12 @@ Each remaining flag is measured, not habitual (full-rss-apm):
   is the product. The egress filter is therefore the application layer, not the
   runtime: every outbound URL (the requester's `?url=` and every article link
   inside a fetched feed) goes through `egress.ts`, which refuses non-http(s)
-  schemes, credentials, and private, local, link-local or reserved targets
-  (including a name that resolves to one), re-validates every redirect hop,
-  bounds each request with a 10-second timeout, and caps how much of a response
-  is buffered.
+  schemes, credentials, private, local, link-local or reserved targets
+  (including a name that resolves to one) and the service's own host (a feed or
+  article pointing back at us would make us expand ourselves), re-validates
+  every redirect hop, bounds each request with a 10-second timeout, and caps how
+  much of a response is buffered. Only a 2xx article response is converted and
+  cached; an error page is not stored as an article.
 
 ## Tests and gates
 
