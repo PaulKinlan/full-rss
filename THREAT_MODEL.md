@@ -69,9 +69,13 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   one request into a tree of them, ten items per level, and the target is a
   public address, so no range check would ever see it. `host` rather than
   `origin` is compared deliberately — an `http://` reference to the same host
-  reaches the same service through the platform's own https redirect. The guard
-  also covers the requester's `?url=` and every redirect hop, because
-  `guardedFetch` re-runs this function per hop.
+  reaches the same service through the platform's own https redirect. Both sides
+  are normalised first: lower-cased, default port dropped, and **terminal dots
+  removed**, because `service.test.` is the root-anchored spelling of the same
+  DNS host while `new URL()` preserves the dot — comparing the raw `host` let
+  one appended character through (full-rss-pbz). The guard also covers the
+  requester's `?url=` and every redirect hop, because `guardedFetch` re-runs
+  this function per hop.
 
 ### DNS validation
 

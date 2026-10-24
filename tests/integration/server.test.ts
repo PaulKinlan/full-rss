@@ -146,18 +146,24 @@ Deno.test("a url naming this service's own origin is refused with 403 and never 
       return new Response("unexpected", { status: 200 });
     },
     async () => {
-      const self =
-        "https://service.test/?url=https%3A%2F%2Fevil.test%2Ffeed.xml";
-      const res = await handleRequest(
-        new Request(`https://service.test/?url=${encodeURIComponent(self)}`),
-      );
-      assertEqual(res.status, 403, "status");
-      assertHtmlHeaders(res);
-      assertIncludes(
-        await res.text(),
-        "and not this service itself",
-        "the warning names self-reference",
-      );
+      // The root-anchored (FQDN) spelling of the same host is the same service (full-rss-pbz).
+      for (
+        const self of [
+          "https://service.test/?url=https%3A%2F%2Fevil.test%2Ffeed.xml",
+          "https://service.test./?url=https%3A%2F%2Fevil.test%2Ffeed.xml",
+        ]
+      ) {
+        const res = await handleRequest(
+          new Request(`https://service.test/?url=${encodeURIComponent(self)}`),
+        );
+        assertEqual(res.status, 403, `status for ${self}`);
+        assertHtmlHeaders(res);
+        assertIncludes(
+          await res.text(),
+          "and not this service itself",
+          "the warning names self-reference",
+        );
+      }
       assertEqual(fetches, 0, "the service did not fetch itself");
     },
   );

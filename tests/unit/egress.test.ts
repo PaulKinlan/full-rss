@@ -365,12 +365,16 @@ Deno.test("the default resolver's DNS layer is skipped without net permission", 
 // amplification loop, and no private address is involved, so none of the address checks above catch it. The
 // caller passes the host the request arrived on (`selfOrigins`); anything on that host is refused (full-rss-qxz).
 
-Deno.test("a URL on this service's own host is refused, whatever its scheme or path", async () => {
+Deno.test("a URL on this service's own host is refused, whatever its scheme, path or spelling", async () => {
   for (
     const url of [
       "https://service.test/?url=https%3A%2F%2Fevil.test%2Ffeed.xml",
       "http://service.test/feed.xml",
       "https://SERVICE.test/expand?url=x",
+      // The root-anchored (FQDN) spelling of the same DNS host: `new URL` keeps the terminal dot, so a
+      // naive host comparison let one appended character through (full-rss-pbz).
+      "https://service.test./feed.xml",
+      "https://SERVICE.test./expand?url=x",
     ]
   ) {
     await assertRejects(
@@ -381,12 +385,28 @@ Deno.test("a URL on this service's own host is refused, whatever its scheme or p
   }
 });
 
+Deno.test("an origin written with a terminal dot is still this service", async () => {
+  // The caller's own origin spelling must not swap the hole around: both sides are normalised.
+  await assertRejects(
+    () =>
+      parseFetchableUrl("https://service.test/feed.xml", {
+        selfOrigins: ["https://service.test."],
+      }),
+    "this service's own address",
+    "a terminal-dot origin refuses the plain host",
+  );
+});
+
 Deno.test("the own-host check is exact: another port, host or subdomain is not this service", async () => {
   for (
     const url of [
       "https://service.test:8443/feed.xml",
       "https://other.test/feed.xml",
       "https://sub.service.test/feed.xml",
+      // A terminal dot on ANOTHER host is that host's FQDN form, not this service.
+      "https://other.test./feed.xml",
+      // ... and the same host on a different port is a different service.
+      "https://service.test.:8443/feed.xml",
     ]
   ) {
     const parsed = await parseFetchableUrl(url, {
@@ -422,6 +442,30 @@ Deno.test("a redirect back to this service's own host is refused before that hop
           }),
         "this service's own address",
         "a redirect aimed back at this service",
+      );
+      assertEqual(fetched.length, 1, "only the off-service hop was fetched");
+    },
+  );
+});
+
+Deno.test("a redirect to this service by a terminal-dot spelling is refused too", async () => {
+  const fetched: string[] = [];
+  await withStubbedFetch(
+    (url) => {
+      fetched.push(url);
+      return new Response("", {
+        status: 302,
+        headers: { location: "https://service.test./?url=x" },
+      });
+    },
+    async () => {
+      await assertRejects(
+        () =>
+          guardedFetch("https://elsewhere.test/feed.xml", {
+            selfOrigins: ["https://service.test"],
+          }),
+        "this service's own address",
+        "a terminal-dot redirect back at this service",
       );
       assertEqual(fetched.length, 1, "only the off-service hop was fetched");
     },

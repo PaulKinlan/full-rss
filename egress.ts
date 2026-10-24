@@ -235,14 +235,29 @@ export type FetchUrlOptions = {
 };
 
 /**
- * True when `url` names a host this service answers on. Compared by `host` (which includes a non-default
+ * The host a URL names, normalised for comparison: lower-cased, terminal dots removed, and the port kept
+ * only when it is not the scheme's default (WHATWG URL drops a default port, so two spellings of the same
+ * service agree).
+ *
+ * The terminal dot is load-bearing. "service.test." is the root-anchored (FQDN) spelling of the very same
+ * DNS host as "service.test", and `new URL()` preserves it - so comparing `host` directly let a feed or a
+ * `?url=` reach this service by appending one character, which is the whole amplification loop again
+ * (full-rss-pbz). The address and name checks below strip it for the same reason.
+ */
+const hostKey = (url: URL): string => {
+  const hostname = url.hostname.toLowerCase().replace(/\.+$/, "");
+  return url.port === "" ? hostname : `${hostname}:${url.port}`;
+};
+
+/**
+ * True when `url` names a host this service answers on. Compared by host (which includes a non-default
  * port) rather than by origin, deliberately: an `http://` reference to the same host reaches the same
  * service through the platform's own https redirect, so the scheme must not open a way around the check.
  * An origin the caller handed us that does not parse cannot mean "this service", so it matches nothing.
  */
 const isOwnHost = (url: URL, origin: string): boolean => {
   try {
-    return new URL(origin).host.toLowerCase() === url.host.toLowerCase();
+    return hostKey(new URL(origin)) === hostKey(url);
   } catch {
     return false;
   }
