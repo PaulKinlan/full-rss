@@ -452,12 +452,37 @@ export const readCappedText = (
     : readCappedStream(response.body, maxBytes);
 
 /**
- * One line of attacker-controlled text, safe for a log: control characters (forged log lines, ANSI) are
- * stripped, userinfo is masked and URL queries/fragments are redacted. Feed and article URLs can carry
- * API keys even when the hostname is public, including inside exception messages from upstream libraries.
+ * No log line carries more than this many characters of attacker-controlled text. A URL is the content of
+ * these lines and a feed may link to a megabyte-long path, so without a bound one item becomes a megabyte of
+ * log write per request (full-rss-d2m). Truncation happens LAST, after the redactions below, so the surviving
+ * prefix is already sanitized and the marker only counts what was dropped.
  */
-export const sanitizeForLog = (value: string): string =>
-  value
+export const MAX_LOG_CHARS = 1024;
+
+/** Longest prefix of `value` that fits in `limit` characters without splitting a surrogate pair. */
+const sliceChars = (value: string, limit: number): string => {
+  let end = Math.min(limit, value.length);
+  const code = value.charCodeAt(end - 1);
+  // A high surrogate at the cut has lost its partner: drop it rather than emit half a character.
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return value.slice(0, end);
+};
+
+/**
+ * One line of attacker-controlled text, safe for a log: control characters (forged log lines, ANSI) are
+ * stripped, userinfo is masked, URL queries/fragments are redacted, and the result is bounded in length.
+ * Feed and article URLs can carry API keys even when the hostname is public, including inside exception
+ * messages from upstream libraries.
+ *
+ * The length cut happens FIRST, before the redactions, and that order is load-bearing twice over. It bounds
+ * the line (full-rss-d2m), and it keeps the work linear: the userinfo pattern below has to look for a
+ * literal '@', so on an unbounded URL it backtracks from every start position to the end of the string -
+ * O(n^2), measured at 161 SECONDS of CPU for one 100,000-character URL, on the path every request takes
+ * before it fetches anything. Redacting a bounded prefix costs microseconds.
+ */
+export const sanitizeForLog = (value: string): string => {
+  const bounded = sliceChars(value, MAX_LOG_CHARS);
+  const cleaned = bounded
     // \p{Cc} is the control-character class (C0, DEL and C1) - the lint-quiet spelling of the same set.
     .replace(/[\p{Cc}]/gu, "")
     .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@/gi, "$1***@")
@@ -465,3 +490,8 @@ export const sanitizeForLog = (value: string): string =>
     // cannot be distinguished from the text after the URL. Stopping at whitespace leaks later parameters.
     // This also covers invalid URLs quoted in parse errors and fragments without a query.
     .replace(/[?#].*/s, (tail) => `${tail[0]}[redacted]`);
+
+  return bounded === value
+    ? cleaned
+    : `${cleaned}...[truncated ${value.length - bounded.length} chars]`;
+};

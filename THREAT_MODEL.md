@@ -101,8 +101,13 @@ pipes its `DecompressionStream` through the same 5 MB cap rather than calling
 ### `sanitizeForLog`
 
 Attacker-controlled URLs and error strings are stripped of control characters
-(forged log lines, ANSI), have userinfo masked, and have query/fragment redacted
-before logging.
+(forged log lines, ANSI), have userinfo masked, have query/fragment redacted,
+and are **bounded in length**: a log value is cut to `MAX_LOG_CHARS` (1024)
+characters and the cut is announced with a `...[truncated N chars]` marker
+(full-rss-d2m). A URL is the content of these lines, and a feed may link to a
+megabyte-long path, so without a bound a single item becomes a megabyte of log
+write per request. Truncation happens **last**, after the redactions, so the
+surviving prefix is already sanitized; the cut never splits a surrogate pair.
 
 ## Content pipeline
 
@@ -117,6 +122,16 @@ before logging.
   publisher HTML (scripts, event handlers, `javascript:` URLs, iframes) into a
   reader. Sanitization is idempotent under a fixed config, so expanded articles
   pass through unchanged.
+- The same boundary decides which **links** a reader receives (full-rss-d2m).
+  `<link>` (channel and item) is a navigation target, so only `http(s)` is
+  re-emitted — anything else becomes an empty element, the shape an item with no
+  link already had. `<guid>` is an _identifier_, not a link: Atom ids are
+  routinely `urn:uuid:…` or `tag:…`, and dropping them would leave items with no
+  id, so only schemes a consumer can be made to **act** on (`javascript:`,
+  `data:`, `vbscript:`, `blob:`, `file:`, `about:`, `view-source:`, browser and
+  OS handler schemes) are removed. Detection goes through the URL parser, so
+  `JaVaScRiPt:` and tab/newline-obfuscated spellings normalise before the
+  comparison.
 - Item author and category values are XML-escaped when written into the output
   document; the `@feed/feed` builder escapes everything else it emits.
 

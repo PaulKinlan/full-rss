@@ -11,11 +11,13 @@
 import {
   assert,
   assertEqual,
+  assertExcludes,
   assertIncludes,
   assertRejects,
 } from "../asserts.ts";
 import {
   guardedFetch,
+  MAX_LOG_CHARS,
   parseFetchableUrl,
   readCappedStream,
   readCappedText,
@@ -357,6 +359,78 @@ Deno.test("the default resolver's DNS layer is skipped without net permission", 
   // hostname. This is the behaviour the server suite's stubbed-fetch tests rely on.
   const url = await parseFetchableUrl("https://example.com/feed.xml");
   assertEqual(url.hostname, "example.com", "hostname");
+});
+
+Deno.test("a short log value is unchanged by the length bound", () => {
+  assertEqual(
+    sanitizeForLog("Failed to fetch the feed: boom"),
+    "Failed to fetch the feed: boom",
+    "a line under the bound is untouched (no marker, no truncation)",
+  );
+});
+
+Deno.test("an oversized attacker-controlled log value is truncated with a count", () => {
+  // A feed may link to a megabyte-long path, and the URL is the log line: unbounded, one item is a
+  // megabyte of log write per request (full-rss-d2m).
+  const line = sanitizeForLog("https://evil.example/" + "a".repeat(100_000));
+  assertIncludes(line, "https://evil.example/", "the useful prefix survives");
+  assertIncludes(line, "...[truncated ", "the marker says it was cut");
+  assertIncludes(line, "chars]", "the marker says how much");
+  assert(
+    line.length <= MAX_LOG_CHARS + 40,
+    `the log line stays near the bound, got ${line.length} chars`,
+  );
+});
+
+Deno.test("truncation keeps the redactions: a secret tail is still not logged", () => {
+  // The redaction happens before the cut, so the query is already gone; what survives the cut is the prefix
+  // of the path, which holds no secret. (A short value loses nothing: see the test above.)
+  const long = "https://evil.example/" + "a".repeat(100_000) +
+    "?token=secret-123";
+  const line = sanitizeForLog(long);
+  assertExcludes(line, "secret-123", "query redaction survives truncation");
+  assertExcludes(line, "?token", "the query is redacted, not just cut");
+  assertIncludes(line, "...[truncated ", "the cut is announced");
+});
+
+Deno.test("truncation never splits a surrogate pair", () => {
+  // One leading char shifts the cut into the middle of an emoji, which would otherwise emit half a code
+  // point (a lone surrogate) into the log.
+  const line = sanitizeForLog("a" + "😀".repeat(2000));
+  const prefix = line.slice(0, line.indexOf("...[truncated"));
+  for (let i = 0; i < prefix.length; i++) {
+    const code = prefix.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = prefix.charCodeAt(i + 1);
+      assert(
+        next >= 0xdc00 && next <= 0xdfff,
+        `no lone high surrogate at index ${i}`,
+      );
+      i++;
+    } else {
+      assert(
+        code < 0xdc00 || code > 0xdfff,
+        `no lone low surrogate at index ${i}`,
+      );
+    }
+  }
+});
+
+Deno.test("a long log value costs linear time, not quadratic", () => {
+  // The cut is applied BEFORE the redaction patterns, and this is why: the userinfo pattern scans for a
+  // literal '@', so on an unbounded 100k-character URL it took 161 SECONDS of CPU — on the path every
+  // request takes before it fetches anything. Redacting a bounded prefix is microseconds. The budget here
+  // is deliberately loose (the fixed version uses well under a millisecond); it exists to fail loudly if
+  // the cut ever moves back after the redactions, which is a ~10^5x regression, not a slow machine.
+  const started = performance.now();
+  sanitizeForLog("https://evil.example/" + "a".repeat(100_000));
+  const elapsed = performance.now() - started;
+  assert(
+    elapsed < 5_000,
+    `one 100k-char log value to sanitize in under 5s, took ${
+      Math.round(elapsed)
+    }ms`,
+  );
 });
 
 // --- guardedFetch: redirects re-validated ----------------------------------------------------------------
