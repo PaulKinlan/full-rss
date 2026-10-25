@@ -99,6 +99,38 @@ const ATOM_WITH_AUTHOR = `<?xml version="1.0" encoding="utf-8"?>
 const itemCount = (xml: string): number => (xml.match(/<item>/g) ?? []).length;
 
 /*
+  A feed's links are publisher-controlled text this document re-emits for a reader: <link> is a navigation
+  target and <guid> an identifier. A scheme decides what happens when the consumer acts on it, so the
+  active ones (javascript:, data:) may not reach the output (full-rss-d2m). Atom-style opaque ids must keep
+  working - dropping them would leave items with no id, and readers could not tell two versions apart.
+*/
+const RSS_WITH_HOSTILE_LINKS = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Hostile Links</title>
+    <link>javascript:alert(1)</link>
+    <item>
+      <title>Script link</title>
+      <link>javascript:alert(2)</link>
+      <guid>https://example.com/real-guid</guid>
+      <description>Script item</description>
+    </item>
+    <item>
+      <title>Data link</title>
+      <link>data:text/html,hello</link>
+      <guid>tag:example.com,2025:data</guid>
+      <description>Data item</description>
+    </item>
+    <item>
+      <title>Obfuscated</title>
+      <link>  JaVaScRiPt:alert(3)</link>
+      <guid>javascript:alert(4)</guid>
+      <description>Obfuscated item</description>
+    </item>
+  </channel>
+</rss>`;
+
+/*
   Feed-supplied markup is untrusted (full-rss-9vl): an item whose article expansion is skipped or falls back
   carries the publisher's raw HTML into content:encoded and description, and a feed reader renders it. The
   export boundary sanitizes both with the same defaults content.ts applies to expanded articles.
@@ -228,6 +260,34 @@ Deno.test("exportFeed carries a name-only author rather than dropping it", async
   // Atom authors commonly have a name and no email; <author> is the only element RSS 2.0 offers for it here.
   const xml = exportFeed(await parseFeed(ATOM_WITH_AUTHOR));
   assertIncludes(xml, "<author>Name Only</author>");
+});
+
+Deno.test("exportFeed drops feed item links and guids whose scheme a consumer can act on", async () => {
+  const xml = exportFeed(await parseFeed(RSS_WITH_HOSTILE_LINKS));
+  // No executable scheme survives anywhere in the document, in any spelling.
+  const lower = xml.toLowerCase();
+  assertExcludes(lower, "javascript:");
+  assertExcludes(lower, "data:text/html");
+  // The items themselves are not lost: their titles, summaries and identifiers still go out.
+  assert(itemCount(xml) === 3, `three <item>s, got ${itemCount(xml)}`);
+  for (const title of ["Script link", "Data link", "Obfuscated"]) {
+    assertIncludes(xml, `<title>${title}</title>`);
+  }
+});
+
+Deno.test("exportFeed keeps a hostile item's inert identifier and http(s) link", async () => {
+  const xml = exportFeed(await parseFeed(RSS_WITH_HOSTILE_LINKS));
+  // An https guid is an identifier AND a link: kept.
+  assertIncludes(xml, "<guid>https://example.com/real-guid</guid>");
+  // A tag: id cannot be acted on, so it stays (the Atom round-trip depends on this class of id).
+  assertIncludes(xml, "<guid>tag:example.com,2025:data</guid>");
+});
+
+Deno.test("exportFeed drops a channel link whose scheme a consumer can act on", async () => {
+  // The channel <link> is publisher-controlled too; the fixture's is javascript:alert(1).
+  const xml = exportFeed(await parseFeed(RSS_WITH_HOSTILE_LINKS));
+  assertIncludes(xml, "<title>Hostile Links</title>", "the channel survives");
+  assertExcludes(xml.toLowerCase(), "javascript:");
 });
 
 Deno.test("exportFeed emits no author or category element when an entry has neither", async () => {

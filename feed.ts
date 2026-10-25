@@ -82,6 +82,63 @@ const itemCategories = (
     .map((category) => (category.term ?? "").trim())
     .filter((term) => term !== "");
 
+/*
+  A feed's own links - the channel <link>, each item's <link> and its <guid> - are publisher-controlled text
+  that this document re-emits verbatim into what a reader consumes. The scheme decides what happens when a
+  reader, or the browser it hands an item to, acts on that string: `javascript:` runs in the page rendering
+  the item and `data:` can carry a whole HTML document, so neither may be re-emitted (full-rss-d2m).
+
+  <link> is a navigation target, so it is held to what RSS/Atom mean by a link: http(s), copied unchanged
+  (the parser hands back absolute hrefs), otherwise dropped to an empty element - the same shape an item
+  with no link at all already produces.
+
+  <guid> is an IDENTIFIER, not a link. Atom ids are routinely `urn:uuid:...` or `tag:blogger.com,...`, and
+  dropping those would leave items with no id, so readers could no longer tell two versions of a feed apart
+  (Atom feeds round-trip through this document by design). Only schemes a consumer can be made to ACT on are
+  dropped. Detection goes through the URL parser so the obfuscated spellings normalise - `  JaVaScRiPt:`,
+  `java\tscript:` and friends - before they are compared.
+*/
+const ACTIVE_SCHEMES: ReadonlySet<string> = new Set([
+  "javascript:",
+  "vbscript:",
+  "livescript:",
+  "data:",
+  "blob:",
+  "filesystem:",
+  "file:",
+  "jar:",
+  "about:",
+  "view-source:",
+  "chrome:",
+  "chrome-extension:",
+  "moz-extension:",
+  "ms-msdt:",
+  "search-ms:",
+  "mocha:",
+]);
+
+/** The scheme of `value` according to the URL parser, or null when it is not a URL at all. */
+const schemeOf = (value: string): string | null => {
+  try {
+    return new URL(value).protocol.toLowerCase();
+  } catch {
+    return null;
+  }
+};
+
+/** A link this document may carry: http(s) exactly, otherwise nothing. */
+const safeLink = (raw: string | undefined): string => {
+  const value = (raw ?? "").trim();
+  const scheme = schemeOf(value);
+  return scheme === "http:" || scheme === "https:" ? value : "";
+};
+
+/** An identifier this document may carry: anything a consumer cannot be made to act on. */
+const safeId = (raw: string | undefined): string => {
+  const value = (raw ?? "").trim();
+  return ACTIVE_SCHEMES.has(schemeOf(value) ?? "") ? "" : value;
+};
+
 type FeedItem = {
   title: string;
   link: string;
@@ -152,7 +209,7 @@ export const exportFeed = (feed: Feed): string => {
   const rssFeed = new RssWithItemMetadata({
     title: feed.title?.value || "",
     description: feed.description || "",
-    link: feed.links[0] || "",
+    link: safeLink(feed.links[0]),
     authors: parseAuthors(feed.author),
   });
 
@@ -173,8 +230,8 @@ export const exportFeed = (feed: Feed): string => {
       {
         title: entry.title?.value || "",
         description: sanitizeFeedHtml(entry.description?.value),
-        link: links[0] || "",
-        id: entry.id || "",
+        link: safeLink(links[0]),
+        id: safeId(entry.id),
         updated: date,
         content: {
           body: content,
