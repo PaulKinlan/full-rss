@@ -225,13 +225,15 @@ const resolveForValidation: ResolveDns = async (hostname) => {
 
 /**
  * Options for the suites and for the caller's egress policy: an explicit resolver is always consulted,
- * permission gate or not, and `selfOrigins` names the origins this service answers on so a URL pointing
- * back at one of them can be refused (full-rss-qxz).
+ * permission gate or not, `selfOrigins` names the hosts this service answers on so a URL pointing back at one
+ * of them can be refused (full-rss-qxz), and `selfAddresses` names the same service by ADDRESS, which is what
+ * an IP literal or an alias hostname is spelled with (full-rss-647).
  */
 export type FetchUrlOptions = {
   resolveDns?: ResolveDns;
   signal?: AbortSignal;
   selfOrigins?: readonly string[];
+  selfAddresses?: readonly string[];
 };
 
 /**
@@ -261,6 +263,122 @@ const isOwnHost = (url: URL, origin: string): boolean => {
   } catch {
     return false;
   }
+};
+
+/**
+ * The configured hosts this service answers on, from a comma/whitespace-separated list: `host`, `host:port` or
+ * a full origin. This exists because the request's own URL cannot be trusted to name the service: `req.url` is
+ * built from the client's `Host` header (and an absolute-form request line overrides that), so `Host:
+ * attacker.example` made the self-expansion guard compare against the wrong host and the amplification loop
+ * reopened (full-rss-647). Configuration is the operator's statement of identity; the request is not.
+ *
+ * Entries are normalised through `new URL`, so a default port disappears and comparison stays by host:port. A
+ * malformed entry throws rather than being dropped: silently ignoring it would disable the guard while looking
+ * configured. That strictness now extends to the parts a HOST cannot have: a userinfo, path, query or fragment
+ * in the entry means the operator meant something other than what would be compared, and `new URL` would
+ * happily discard the difference - `https://service.example@attacker.example` parses to the origin
+ * `https://attacker.example`, so a typo'd or copy-pasted credential URL would make the guard trust the
+ * ATTORNEY's host and refuse the real service, with no warning because a non-empty list parsed fine
+ * (full-rss-56w).
+ */
+export const parseSelfHosts = (raw: string | undefined): string[] => {
+  const origins: string[] = [];
+  for (const entry of (raw ?? "").split(/[\s,]+/)) {
+    if (entry === "") continue;
+    let url: URL;
+    try {
+      url = new URL(
+        /^[a-z][a-z0-9+.-]*:\/\//i.test(entry) ? entry : `https://${entry}`,
+      );
+    } catch {
+      throw new Error(
+        `${entry} is not a host, host:port or origin to name this service by`,
+      );
+    }
+    if (url.hostname === "") {
+      throw new Error(`${entry} names no host for this service`);
+    }
+    if (url.username !== "" || url.password !== "") {
+      throw new Error(
+        `${entry} carries credentials; name this service by its host, not by a credentialed URL`,
+      );
+    }
+    if (
+      (url.pathname !== "" && url.pathname !== "/") || url.search !== "" ||
+      url.hash !== ""
+    ) {
+      throw new Error(
+        `${entry} carries a path, query or fragment; name this service by its host only`,
+      );
+    }
+    origins.push(url.origin);
+  }
+  return origins;
+};
+
+/**
+ * A canonical key for an address literal, so two spellings of one address compare equal (and so an address can
+ * never be confused with a name). Returns null for anything that is not an IP literal.
+ */
+const addressKey = (raw: string): string | null => {
+  const v4 = parseIPv4(raw);
+  if (v4 != null) return `v4:${v4}`;
+  const v6 = parseIPv6(raw);
+  return v6 == null ? null : `v6:${v6.join(":")}`;
+};
+
+/** The addresses this service answers on, as comparable keys. Empty when none are configured. */
+const ownAddressKeys = (
+  addresses: readonly string[] | undefined,
+): Set<string> => {
+  const keys = new Set<string>();
+  for (const address of addresses ?? []) {
+    const key = addressKey(address);
+    if (key != null) keys.add(key);
+  }
+  return keys;
+};
+
+/**
+ * Resolve this service's own configured hosts to addresses, so the guard can also refuse a target that spells
+ * this service as its own IP literal. Best effort by design - a lookup that fails leaves the host comparison,
+ * which is still correct, in place (and the residual is recorded in THREAT_MODEL.md).
+ *
+ * Why the answers are not compared against a TARGET's answers. An address is not an identity behind a shared
+ * front: services hosted behind one CDN or reverse proxy (Cloudflare, Deno Deploy's edge, Vercel) share public
+ * addresses with thousands of unrelated sites, so "unrelated.example resolves to our address" proved nothing
+ * and refused every ordinary feed on that shared edge - a far worse failure than the hole it closed
+ * (full-rss-og0). Only an IP LITERAL is compared, which is a statement about the target's spelling rather than
+ * about who else lives at that address, and an alias hostname for this service is left as a recorded residual.
+ */
+export const resolveSelfAddresses = async (
+  origins: readonly string[],
+  resolveDns?: ResolveDns,
+): Promise<string[]> => {
+  const resolver = resolveDns ??
+    (netPermissionGranted() ? resolveForValidation : undefined);
+  const addresses: string[] = [];
+  for (const origin of origins) {
+    let hostname: string;
+    try {
+      hostname = new URL(origin).hostname.replace(/^\[|\]$/g, "");
+    } catch {
+      continue;
+    }
+    if (hostname === "") continue;
+    // A configured literal needs no lookup: it is its own address.
+    if (addressKey(hostname) != null) {
+      addresses.push(hostname);
+      continue;
+    }
+    if (resolver == null) continue;
+    try {
+      addresses.push(...await resolver(hostname));
+    } catch {
+      // Unresolved: degrade to the host comparison rather than failing requests.
+    }
+  }
+  return addresses;
 };
 
 /**
@@ -305,6 +423,18 @@ export const parseFetchableUrl = async (
   if (address.includes("%")) {
     // A zone identifier (fe80::1%25eth0): a link-local address with an interface name attached.
     throw new BlockedUrlError(`${address} carries a zone identifier`);
+  }
+
+  // The same service, spelled as its own IP literal rather than by name. The host comparison above cannot see
+  // that, and it reopens the loop the host check exists to close (full-rss-647). A hostname is deliberately
+  // NOT judged by the addresses it resolves to: behind a shared CDN that would refuse unrelated feeds
+  // (full-rss-og0); see resolveSelfAddresses.
+  const ownAddresses = ownAddressKeys(options?.selfAddresses);
+  if (ownAddresses.size > 0) {
+    const literal = addressKey(address);
+    if (literal != null && ownAddresses.has(literal)) {
+      throw new BlockedUrlError(`${url.host} is this service's own address`);
+    }
   }
 
   const asIPv4 = parseIPv4(address);

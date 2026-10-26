@@ -62,20 +62,36 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   is stored `f7f7:f7f7`) instead of the private ones.
 - **names meaning "here"** — `localhost`, `*.localhost`, `local`, `internal` —
   before DNS is consulted;
-- **URLs on this service's own host.** The server passes the origin the request
-  arrived on (`selfOrigins`), and any URL whose host matches it is refused
-  (`<host> is this service's own address`). This is the recursive-amplification
-  guard (full-rss-qxz): a feed whose items link back at the expander would turn
-  one request into a tree of them, ten items per level, and the target is a
-  public address, so no range check would ever see it. `host` rather than
-  `origin` is compared deliberately — an `http://` reference to the same host
-  reaches the same service through the platform's own https redirect. Both sides
-  are normalised first: lower-cased, default port dropped, and **terminal dots
+- **URLs on this service's own host, and on its own addresses.** The caller
+  passes `selfOrigins` — the hosts this service answers on — and
+  `selfAddresses`, the addresses they resolve to, and any URL matching either is
+  refused (`<host>` is this service's own address). This is the
+  recursive-amplification guard (full-rss-qxz): a feed whose items link back at
+  the expander would turn one request into a tree of them, ten items per level,
+  and the target is a public address, so no range check would ever see it.
+  **Both come from configuration (`FULL_RSS_SELF_HOSTS`), never from the
+  request** — `req.url` is built from the client's `Host` header (an
+  absolute-form request line overrides it too), so a client sending
+  `Host: attacker.example` made the guard compare against the attacker's host
+  while the items pointed at the real one (full-rss-647). The request origin is
+  used only as a development fallback when nothing is configured, and the
+  service says so in the log once at startup-level clarity, because in that mode
+  the client chooses what "this service" means. `host` rather than `origin` is
+  compared deliberately — an `http://` reference to the same host reaches the
+  same service through the platform's own https redirect. Both sides are
+  normalised first: lower-cased, default port dropped, and **terminal dots
   removed**, because `service.test.` is the root-anchored spelling of the same
   DNS host while `new URL()` preserves the dot — comparing the raw `host` let
-  one appended character through (full-rss-pbz). The guard also covers the
-  requester's `?url=` and every redirect hop, because `guardedFetch` re-runs
-  this function per hop.
+  one appended character through (full-rss-pbz). Addresses are compared **by
+  value**, so the same service spelled as its own IP literal is refused too
+  (full-rss-647). A target's resolved ADDRESSES are deliberately not compared
+  against ours: behind a shared CDN or reverse proxy (Cloudflare, a Deno Deploy
+  edge, Vercel) thousands of unrelated sites share our address, so that
+  comparison refused every ordinary feed on the same front - a worse failure
+  than the hole it closed (full-rss-og0). An alias hostname pointing at this
+  service is therefore not detected, and is recorded as a residual. The guard
+  also covers the requester's `?url=` and every redirect hop, because
+  `guardedFetch` re-runs this function per hop.
 
 ### DNS validation
 
@@ -216,13 +232,31 @@ Known limits that are accepted deliberately:
    observes it; the 30-second request race in `server.ts` bounds even
    non-cancellable work (DNS, KV, parsing) for the response, though the losing
    work may still finish in the background.
-7. **The self-reference guard is per-host, not per-deployment.** It refuses the
-   host the request arrived on. A second deployment of this same service on a
-   different hostname (a preview URL, a custom domain that is not the one in
-   `req.url`, or another operator's instance) is an ordinary public host to the
+7. **The self-reference guard is per-host, per-address, not per-deployment.** It
+   refuses the hosts and addresses in `FULL_RSS_SELF_HOSTS`. A second deployment
+   of this same service on a different hostname and different addresses (a
+   preview URL, another operator's instance) is an ordinary public host to the
    guard, so a feed linking to _that_ copy is not detected. Closing it would
    need a registry of deployment hostnames, which the service does not have; the
-   per-request 30-second deadline and the 10-article cap remain the bound.
+   per-request 30-second deadline and the 10-article cap remain the bound. Two
+   related residuals, both deliberate: if `FULL_RSS_SELF_HOSTS` is unset the
+   service falls back to the request's own origin, which the client chooses, and
+   logs that once; and if this service's own addresses cannot be resolved only
+   the host (and literal-address) comparison applies. Neither is silent in the
+   code, and both are worse than configuration, not equal to it. A misconfigured
+   entry cannot silently become a different host either: `parseSelfHosts`
+   rejects a userinfo, path, query or fragment, so
+   `https://service@attacker.example` fails the boot with an error instead of
+   configuring the attacker's host (full-rss-56w). An **alias hostname** for
+   this same service (a name that resolves to our addresses) is likewise not
+   detected, for the shared-CDN reason above: an address match cannot establish
+   that a distinct Host routes here (full-rss-og0). The literal spelling of our
+   own address IS refused, because that is a statement about the target's
+   spelling rather than about who else lives at that address. A depth counter is
+   **not** used, and should not be added: the loop crosses independent HTTP
+   requests, so any "depth" would have to arrive in the request — the same
+   client-controlled input that made the Host header unusable. Identity of the
+   service is the property that can be trusted.
 
 ## Change discipline
 
