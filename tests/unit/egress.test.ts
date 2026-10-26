@@ -835,6 +835,21 @@ Deno.test("userinfo is masked even when the '@' sits past the length bound", () 
   );
 });
 
+Deno.test("a password is masked whichever legal userinfo character it contains", () => {
+  // Regression (full-rss-96w): an earlier version of the authority scan stopped at ', ", < and > on the theory
+  // that a URL authority cannot contain them, so a password holding one was logged verbatim - while the regex
+  // it replaced had masked it. WHATWG retains all four in userinfo, so they are userinfo here too.
+  for (const pw of ["sec'ret", 'sec"ret', "sec<ret", "sec>ret", "pa\\ss"]) {
+    const line = sanitizeForLog(`http://user:${pw}@evil.example/x`);
+    assertExcludes(line, pw, `the password with ${pw} is not logged`);
+    assertEqual(
+      line,
+      "http://***@evil.example/x",
+      `userinfo holding ${pw} is masked whole`,
+    );
+  }
+});
+
 Deno.test("userinfo masking reads through the last '@', not the first", () => {
   // A password may contain an '@'. Masking to the first one would log the rest of it.
   assertEqual(

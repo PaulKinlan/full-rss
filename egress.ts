@@ -515,15 +515,18 @@ export const MAX_LOG_CHARS = 1024;
 export const MAX_LOG_SCAN = 4 * MAX_LOG_CHARS;
 
 /**
- * Characters that cannot appear in a URL authority, so they end it: the delimiters of the path, query and
- * fragment, the "forbidden host code points" a browser stops at, and anything at or below U+0020 (the C0
- * controls and space - the C0 controls are already stripped by the time this is used).
+ * Where the authority of an absolute URL ends: at the first '/' or whitespace, exactly the set the regex this
+ * replaced excluded (`[^@/\s]`). That set is deliberate and must not grow. An earlier version of this function
+ * also stopped at `'`, `"`, `<`, `>` and `\\` on the theory that a URL authority cannot contain them - it can:
+ * WHATWG retains all of those in userinfo (percent-encoded in `href`, unencoded in the raw string we are handed),
+ * so stopping there meant `sanitizeForLog("http://user:sec'ret@host/x")` returned the password verbatim while
+ * the regex had masked it (full-rss-96w). Over-masking is the safe direction (the docblock below says so);
+ * under-masking is the bug. Nothing before a '/' can be told apart from userinfo reliably enough to stop early,
+ * and text before the '/' is exactly where a password can sit - a '?' or '#' or quote inside it is masked
+ * too, which costs nothing: a query or fragment is redacted wholesale a moment later.
  */
-const endsAuthority = (value: string, index: number): boolean => {
-  const ch = value[index];
-  return ch === "/" || ch === "?" || ch === "#" || ch === "\\" || ch === "\"" ||
-    ch === "'" || ch === "<" || ch === ">" || value.charCodeAt(index) <= 0x20;
-};
+const endsAuthority = (value: string, index: number): boolean =>
+  value[index] === "/" || value.charCodeAt(index) <= 0x20;
 
 /**
  * Mask the userinfo of every absolute URL in `value` (`user:password@host` becomes `***@host`).
