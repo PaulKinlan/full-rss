@@ -50,6 +50,42 @@ for needle in \
 done
 has "$out" "single-egress: FAIL" "the failure is named"
 
+printf '=== the other ways out, and the renamed fetch, are caught too (full-rss-bm0)\n'
+fixture="$TMP/network"; mkdir -p "$fixture"
+cat >"$fixture/outbound.ts" <<'EOF'
+export const tcp = () => Deno.connect({ hostname: "example.com", port: 80 });
+export const tls = () => Deno.connectTls({ hostname: "example.com", port: 443 });
+export const client = () => Deno.createHttpClient({});
+export const dns = () => Deno.resolveDns("example.com", "A");
+export const ws = () => new WebSocket("wss://example.com/");
+export const es = () => new EventSource("https://example.com/sse");
+export const xhr = () => new XMLHttpRequest();
+export const nodeHttp = () => import("node:http");
+export const nodeNet = () => import("node:net");
+export const renamed = () => {
+  const { fetch: f } = globalThis;
+  return f;
+};
+EOF
+cat >"$fixture/listens.ts" <<'EOF'
+export const tooManyServers = () => Deno.serve(() => new Response("x"));
+EOF
+cat >"$fixture/server.ts" <<'EOF'
+// The one file allowed to listen: it is the request path.
+export const serve = () => Deno.serve(() => new Response("x"));
+EOF
+out=$(bash "$CHECK" "$fixture" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "another network entry point outside egress.ts fails the check" \
+  || bad "another network entry point outside egress.ts fails the check" "exit $rc: $out"
+for needle in \
+  'outbound.ts:1:' 'outbound.ts:2:' 'outbound.ts:3:' 'outbound.ts:4:' 'outbound.ts:5:' \
+  'outbound.ts:6:' 'outbound.ts:7:' 'outbound.ts:8:' 'outbound.ts:9:' 'outbound.ts:11:'; do
+  has "$out" "$needle" "outbound line ${needle#outbound.ts:} is reported"
+done
+has "$out" 'outbound.ts:11:' "the DESTRUCTURED fetch (const { fetch: f } = globalThis) is reported"
+has "$out" 'listens.ts:1:' "a listener outside server.ts is reported"
+hasnt "$out" 'server.ts:2:' "the listener in server.ts is allowed"
+
 printf '=== the spellings it must NOT catch\n'
 fixture="$TMP/clean"; mkdir -p "$fixture"
 cat >"$fixture/clean.ts" <<'EOF'
@@ -72,6 +108,8 @@ EOF
 out=$(bash "$CHECK" "$fixture" 2>&1); rc=$?
 [ "$rc" -eq 0 ] && ok "comment lines, wrappers, other objects' .fetch, egress.ts and tests/ are exempt" \
   || bad "comment lines, wrappers, other objects' .fetch, egress.ts and tests/ are exempt" "exit $rc: $out"
+hasnt "$out" 'clean.ts:6:' "guardedFetchContent/parseFetchableUrl are not the platform fetch"
+hasnt "$out" 'clean.ts:' "no line of the clean fixture is reported"
 
 printf '=== the exit code and the message are the contract\n'
 out=$(bash "$CHECK" "$TMP/nonexistent" 2>&1); rc=$?
