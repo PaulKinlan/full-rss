@@ -156,11 +156,17 @@ not be seen.
   re-emitted — anything else becomes an empty element, the shape an item with no
   link already had. `<guid>` is an _identifier_, not a link: Atom ids are
   routinely `urn:uuid:…` or `tag:…`, and dropping them would leave items with no
-  id, so only schemes a consumer can be made to **act** on (`javascript:`,
-  `data:`, `vbscript:`, `blob:`, `file:`, `about:`, `view-source:`, browser and
-  OS handler schemes) are removed. Detection goes through the URL parser, so
-  `JaVaScRiPt:` and tab/newline-obfuscated spellings normalise before the
-  comparison.
+  id, so a **denylist** is dropped: exactly the schemes in `feed.ts`'s
+  `ACTIVE_SCHEMES` (`javascript:`, `data:`, `vbscript:`, `blob:`, `file:`,
+  `about:`, `view-source:`, the browser/extension schemes, and the OS handler
+  schemes it lists). Detection goes through the URL parser, so `JaVaScRiPt:` and
+  tab/newline-obfuscated spellings normalise before the comparison. **A denylist
+  cannot be complete** (full-rss-sbu): an OS handler scheme that is not listed —
+  `itms-services:`, `ms-word:`, `shell:` — survives into `<guid>` verbatim, and
+  that is accepted because `<guid>` is an identifier a reader dedupes on, not a
+  navigation target, and the item's `<link>` remains strict `http(s)`. Making
+  the id safe would mean allowlisting identifier schemes and silently
+  re-identifying every item of a feed that uses an unlisted one.
 - Item author and category values are XML-escaped when written into the output
   document; the `@feed/feed` builder escapes everything else it emits.
 
@@ -191,13 +197,21 @@ Known limits that are accepted deliberately:
    partitions. Accepted because the service only fetches public URLs.
 3. **Caching is keyed on the URL, not the content.** A publisher that changes an
    article serves stale content for up to the TTL. Availability concern, not
-   integrity: the cached bytes were sanitized when produced.
+   integrity, because nothing is ever _served_ from the cache without being
+   sanitized: the cache holds the gzipped **turndown output** (markdown
+   converted from the publisher's HTML) and `sanitize-html` runs on the read
+   path, after decompression, so a poisoned or stale entry still passes the same
+   allowlist before it reaches a reader (full-rss-sbu). The cache is therefore
+   inside the trust boundary for availability and outside it for content policy.
 4. **`sanitize-html` defaults are the policy.** Content that needs tags outside
    the default allowlist (e.g. images) is dropped rather than carried. This is
    consistent between the expanded-article path and the fallback path.
 5. **No rate limiting per requester.** A requester can make the service fetch up
-   to 11 URLs (feed + 10 articles) per request, each bounded in time and size.
-   Global platform limits (Deno Deploy) are the backstop.
+   to 11 targets per request (the feed and 10 articles), and **each target may
+   take up to 5 redirect hops**, every hop re-validated and re-fetched — so up
+   to 66 outbound requests, plus a DNS lookup per hop, bounded in time and size
+   individually and by the request deadline overall (full-rss-sbu). Global
+   platform limits (Deno Deploy) are the backstop.
 6. **Timeouts are best-effort bounds.** `AbortSignal` only cancels work that
    observes it; the 30-second request race in `server.ts` bounds even
    non-cancellable work (DNS, KV, parsing) for the response, though the losing
@@ -218,4 +232,13 @@ and `egress.ts` remains the only egress point: new fetches go through
 `guardedFetch`, never `fetch` directly. That last rule is not a convention any
 more — `tools/single-egress.sh` fails the build when any `*.ts` file outside
 `egress.ts` (and outside `tests/`, which stubs `globalThis.fetch` on purpose)
-references the platform fetch, and it runs in both gate tiers.
+reaches the network, and it runs in both gate tiers. It catches the platform
+fetch in its spellings (called, passed as a value, `globalThis.fetch`,
+`self.fetch`, `window.fetch`, `globalThis["fetch"]`, and a rename through
+destructuring), the other outbound entry points (`Deno.connect`, `connectTls`,
+`createHttpClient`, `resolveDns`, `WebSocket`, `EventSource`, `XMLHttpRequest`,
+`node:http(s)`/`net`/`tls`/`dgram`/`http2`), and a listener anywhere but
+`server.ts` (full-rss-bm0). It is a grep, so its claim is bounded and stated
+plainly: **these spellings fail the build**, not "no other network path can
+exist" — an identifier assembled at runtime (`globalThis["fet" + "ch"]`) or
+imported from a dependency is outside what a text check can see.
