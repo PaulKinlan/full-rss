@@ -505,6 +505,94 @@ export const readCappedText = (
  */
 export const MAX_LOG_CHARS = 1024;
 
+/**
+ * Most characters of attacker-controlled text a log line is ever redacted from: four times the emitted bound,
+ * because redactions can only shorten what they touch, so the surviving prefix of a real line is well inside
+ * it. The cut here is a CPU bound (full-rss-9ey); MAX_LOG_CHARS is the log-write bound. A value longer than
+ * this is redacted as a window - with the userinfo of an authority that runs past the window masked fail
+ * closed, so no secret is emitted from text whose end could not be seen (full-rss-al9).
+ */
+export const MAX_LOG_SCAN = 4 * MAX_LOG_CHARS;
+
+/**
+ * Characters that cannot appear in a URL authority, so they end it: the delimiters of the path, query and
+ * fragment, the "forbidden host code points" a browser stops at, and anything at or below U+0020 (the C0
+ * controls and space - the C0 controls are already stripped by the time this is used).
+ */
+const endsAuthority = (value: string, index: number): boolean => {
+  const ch = value[index];
+  return ch === "/" || ch === "?" || ch === "#" || ch === "\\" || ch === "\"" ||
+    ch === "'" || ch === "<" || ch === ">" || value.charCodeAt(index) <= 0x20;
+};
+
+/**
+ * Mask the userinfo of every absolute URL in `value` (`user:password@host` becomes `***@host`).
+ *
+ * One forward scan, and deliberately not a regular expression. The pattern that used to do this
+ * (`([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@`) has to find a literal '@' to match at all, so on a value
+ * with no '@' in it it backtracked from every start position to the end of the string: O(n^2), measured at
+ * 40-100 ms of CPU for ONE ~920-character request line (full-rss-9ey). Every cursor here only moves forward,
+ * so the pass is linear in the value it is given.
+ *
+ * The mask runs over the value rather than a truncated prefix because the '@' can sit past the bound: a cut
+ * applied first left `http://user:secretpasswordaaa...` in the log with the secrets intact (full-rss-al9).
+ * Reading "absolute URL" liberally is intentional - masking one thing too many is safe, missing one is not.
+ *
+ * A password may itself contain an '@' (`http://user:p@ss@host/`), so the terminator is the LAST '@' before
+ * the authority ends; masking to the first one would leave the rest of the password in the line.
+ *
+ * `windowed` says the caller already cut the value at MAX_LOG_SCAN, so an authority that runs to the end of
+ * the value may be missing the '@' that terminates it. That case fails CLOSED: the whole visible authority
+ * is masked, because the alternative is emitting a password prefix we could not see the end of.
+ */
+const maskUserinfo = (value: string, windowed: boolean): string => {
+  // `copyFrom` is how much of the value is already in `masked`; `searchFrom` is where the next "://" search
+  // starts. They differ whenever an authority is scanned and found clean: the scan moves past it, the copy
+  // does not. Both only ever move forward.
+  let masked = "";
+  let copyFrom = 0;
+  let searchFrom = 0;
+  for (;;) {
+    const schemeAt = value.indexOf("://", searchFrom);
+    if (schemeAt < 0) break;
+    const authorityStart = schemeAt + 3;
+    let authorityEnd = authorityStart;
+    while (authorityEnd < value.length && !endsAuthority(value, authorityEnd)) {
+      authorityEnd++;
+    }
+    let terminator = -1;
+    for (
+      let at = value.indexOf("@", authorityStart);
+      at >= 0 && at < authorityEnd;
+      at = value.indexOf("@", at + 1)
+    ) {
+      terminator = at;
+    }
+    if (terminator >= 0) {
+      masked += `${value.slice(copyFrom, authorityStart)}***@`;
+      copyFrom = searchFrom = terminator + 1;
+    } else if (windowed && authorityEnd === value.length) {
+      masked += `${value.slice(copyFrom, authorityStart)}***@`;
+      copyFrom = searchFrom = value.length;
+    } else {
+      searchFrom = authorityEnd;
+    }
+    if (searchFrom >= value.length) break;
+  }
+  return copyFrom === 0 ? value : masked + value.slice(copyFrom);
+};
+
+/**
+ * Redact everything from the first '?' or '#' on. Incoming URLs are raw, decoded strings, so spaces inside a
+ * query cannot be distinguished from the text after the URL: stopping at whitespace would leak later
+ * parameters (full-rss-d2m). This also covers invalid URLs quoted in parse errors and fragments without a
+ * query. `indexOf` is linear; the `.replace(/[?#].*$/s)` this replaces scanned the tail once per candidate.
+ */
+const redactQuery = (value: string): string => {
+  const cut = value.search(/[?#]/);
+  return cut < 0 ? value : `${value.slice(0, cut)}${value[cut]}[redacted]`;
+};
+
 /** Longest prefix of `value` that fits in `limit` characters without splitting a surrogate pair. */
 const sliceChars = (value: string, limit: number): string => {
   let end = Math.min(limit, value.length);
@@ -520,24 +608,27 @@ const sliceChars = (value: string, limit: number): string => {
  * Feed and article URLs can carry API keys even when the hostname is public, including inside exception
  * messages from upstream libraries.
  *
- * The length cut happens FIRST, before the redactions, and that order is load-bearing twice over. It bounds
- * the line (full-rss-d2m), and it keeps the work linear: the userinfo pattern below has to look for a
- * literal '@', so on an unbounded URL it backtracks from every start position to the end of the string -
- * O(n^2), measured at 161 SECONDS of CPU for one 100,000-character URL, on the path every request takes
- * before it fetches anything. Redacting a bounded prefix costs microseconds.
+ * The redactions run FIRST, each as a single forward pass over a bounded window, and the cut comes LAST - the
+ * order every statement of this function's contract already claimed (THREAT_MODEL.md, the MAX_LOG_CHARS note
+ * above), and the one that makes the guarantee unconditional: redacting a truncated prefix could miss a
+ * delimiter that sits past the cut and log the secret in front of it (full-rss-al9).
+ *
+ * Cost is bounded by MAX_LOG_SCAN, not by the value: nothing backtracks (full-rss-9ey - the old pattern cost
+ * ~100 ms of CPU for ONE ~920-character request line), and the window is far more than the emitted prefix can
+ * use. Together with the fail-closed authority rule in maskUserinfo, the bound does not weaken the guarantee.
  */
 export const sanitizeForLog = (value: string): string => {
-  const bounded = sliceChars(value, MAX_LOG_CHARS);
-  const cleaned = bounded
-    // \p{Cc} is the control-character class (C0, DEL and C1) - the lint-quiet spelling of the same set.
-    .replace(/[\p{Cc}]/gu, "")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@/gi, "$1***@")
-    // Redact the rest of the log line: incoming URLs are raw, decoded strings, so spaces inside a query
-    // cannot be distinguished from the text after the URL. Stopping at whitespace leaks later parameters.
-    // This also covers invalid URLs quoted in parse errors and fragments without a query.
-    .replace(/[?#].*/s, (tail) => `${tail[0]}[redacted]`);
-
-  return bounded === value
-    ? cleaned
-    : `${cleaned}...[truncated ${value.length - bounded.length} chars]`;
+  const windowed = value.length > MAX_LOG_SCAN;
+  const scanned = windowed ? sliceChars(value, MAX_LOG_SCAN) : value;
+  const cleaned = redactQuery(
+    maskUserinfo(
+      // \p{Cc} is the control-character class (C0, DEL and C1) - the lint-quiet spelling of the same set.
+      scanned.replace(/[\p{Cc}]/gu, ""),
+      windowed,
+    ),
+  );
+  const bounded = sliceChars(cleaned, MAX_LOG_CHARS);
+  if (bounded === cleaned && !windowed) return cleaned;
+  const dropped = value.length - bounded.length;
+  return `${bounded}...[truncated ${dropped} chars]`;
 };

@@ -18,6 +18,7 @@ import {
 import {
   guardedFetch,
   MAX_LOG_CHARS,
+  MAX_LOG_SCAN,
   parseFetchableUrl,
   readCappedStream,
   readCappedText,
@@ -416,21 +417,27 @@ Deno.test("truncation never splits a surrogate pair", () => {
   }
 });
 
-Deno.test("a long log value costs linear time, not quadratic", () => {
-  // The cut is applied BEFORE the redaction patterns, and this is why: the userinfo pattern scans for a
-  // literal '@', so on an unbounded 100k-character URL it took 161 SECONDS of CPU — on the path every
-  // request takes before it fetches anything. Redacting a bounded prefix is microseconds. The budget here
-  // is deliberately loose (the fixed version uses well under a millisecond); it exists to fail loudly if
-  // the cut ever moves back after the redactions, which is a ~10^5x regression, not a slow machine.
-  const started = performance.now();
-  sanitizeForLog("https://evil.example/" + "a".repeat(100_000));
-  const elapsed = performance.now() - started;
-  assert(
-    elapsed < 5_000,
-    `one 100k-char log value to sanitize in under 5s, took ${
-      Math.round(elapsed)
-    }ms`,
-  );
+Deno.test("a long log value costs bounded time, not quadratic", () => {
+  // The redactions are single forward passes over at most MAX_LOG_SCAN characters, so the cost of a log value
+  // does not grow with the value at all (full-rss-9ey). The regression this guards: the userinfo pattern had
+  // to find a literal '@', so on an '@'-free value it backtracked from every start position to the end -
+  // measured at 40-100 ms of CPU for ONE ~920-character request line, and 161 SECONDS at 100k characters, on
+  // the path every request takes before it fetches anything. Both sizes below measure ~0.01 ms, so the budget
+  // does not fail on a slow machine; a return to the old order or the old pattern misses it by 10^4-10^6.
+  const budget = 200;
+  for (const size of [100_000, 5_000_000]) {
+    const value = "https://evil.example/" + "a".repeat(size);
+    sanitizeForLog(value); // warm up: JIT and the first use of each pattern
+    const started = performance.now();
+    sanitizeForLog(value);
+    const elapsed = performance.now() - started;
+    assert(
+      elapsed < budget,
+      `one ${size}-char log value to sanitize in under ${budget}ms, took ${
+        Math.round(elapsed)
+      }ms`,
+    );
+  }
 });
 
 // --- self-reference: this service may not fetch itself ------------------------------------------------
@@ -809,4 +816,49 @@ Deno.test("log lines lose control characters and userinfo, and keep the rest", (
     "Failed for https://example.com/feed#[redacted]",
     "raw URL fragment whitespace cannot expose later credentials",
   );
+});
+
+Deno.test("userinfo is masked even when the '@' sits past the length bound", () => {
+  // Regression (full-rss-al9): the length cut used to be applied BEFORE the redactions, so a userinfo longer
+  // than MAX_LOG_CHARS never matched and was logged verbatim — `http://user:secretpasswordaaa...`. The bound
+  // is a LOG-WRITE bound, never a licence to emit a secret whose delimiter was past it.
+  const line = sanitizeForLog(
+    "http://user:secretpassword" + "a".repeat(2000) + "@evil.example/path",
+  );
+  assertExcludes(line, "secretpassword", "the password is not logged");
+  assertIncludes(line, "http://***@", "the userinfo is masked");
+  // Masking a 2 KB userinfo shortens the line well under the bound, so there is nothing left to cut - the
+  // property under test here is that the REDACTION ran, not that the cut did.
+  assert(
+    line.length <= MAX_LOG_CHARS + 40,
+    `the log line stays near the bound, got ${line.length} chars`,
+  );
+});
+
+Deno.test("userinfo masking reads through the last '@', not the first", () => {
+  // A password may contain an '@'. Masking to the first one would log the rest of it.
+  assertEqual(
+    sanitizeForLog("http://user:p@ss@evil.example/x"),
+    "http://***@evil.example/x",
+    "the whole userinfo is masked, including an '@' inside the password",
+  );
+});
+
+Deno.test("an '@' in the path is not userinfo and is left alone", () => {
+  assertEqual(
+    sanitizeForLog("https://example.com/@user/profile"),
+    "https://example.com/@user/profile",
+    "a path '@' is not masked (the authority ended at the first '/')",
+  );
+});
+
+Deno.test("an authority that runs past the scan window is masked fail-closed", () => {
+  // MAX_LOG_SCAN bounds the work (full-rss-9ey), so on a value longer than the window the '@' that ends a
+  // userinfo can sit outside anything this function looks at. Masking the whole visible authority is the
+  // fail-closed answer; emitting it is the original leak again, one window further out.
+  const line = sanitizeForLog(
+    "http://user:hunter2" + "a".repeat(MAX_LOG_SCAN) + "@evil.example/p",
+  );
+  assertExcludes(line, "hunter2", "no password from an authority whose end was not seen");
+  assertIncludes(line, "http://***@", "the visible authority is masked");
 });
