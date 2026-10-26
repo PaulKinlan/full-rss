@@ -11,8 +11,8 @@
 // Articles' full content is deliberately NOT asserted here: `fetchContent` reads Deno KV, which the test
 // process does not have (`--unstable-kv` is not part of the gate). Test 6 pins what matters in both worlds —
 // an article that cannot be enriched must not remove the item from the feed.
-import { assertEqual, assertIncludes } from "../asserts.ts";
-import { handleRequest } from "../../server.ts";
+import { assert, assertEqual, assertIncludes } from "../asserts.ts";
+import { handleRequest, validateSelfHostsConfig } from "../../server.ts";
 
 const FEED = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel>
@@ -168,6 +168,41 @@ Deno.test("a url naming this service's own origin is refused with 403 and never 
       assertEqual(fetches, 0, "the service did not fetch itself");
     },
   );
+});
+
+Deno.test("a malformed FULL_RSS_SELF_HOSTS fails the boot check, not the first request", () => {
+  // Regression (full-rss-7mo): the configuration was parsed lazily, so a typo produced a healthy-looking
+  // process that refused every expansion with a 500. `serve()` now runs this before it binds the socket, so
+  // the process refuses to start - verified against the real entrypoint (`deno run main.ts` exits 1 with the
+  // parse error, and exits 0 with a valid configuration).
+  const previous = Deno.env.get("FULL_RSS_SELF_HOSTS");
+  try {
+    Deno.env.set("FULL_RSS_SELF_HOSTS", "https://service.test@attacker.test");
+    let threw = false;
+    try {
+      validateSelfHostsConfig();
+    } catch {
+      threw = true;
+    }
+    assert(threw, "a credentialed entry fails the boot check");
+
+    Deno.env.set("FULL_RSS_SELF_HOSTS", "service.test,www.service.test");
+    assertEqual(
+      validateSelfHostsConfig().length,
+      2,
+      "a valid configuration passes the boot check",
+    );
+
+    Deno.env.delete("FULL_RSS_SELF_HOSTS");
+    assertEqual(
+      validateSelfHostsConfig().length,
+      0,
+      "an unset configuration is not an error (the development fallback)",
+    );
+  } finally {
+    if (previous === undefined) Deno.env.delete("FULL_RSS_SELF_HOSTS");
+    else Deno.env.set("FULL_RSS_SELF_HOSTS", previous);
+  }
 });
 
 Deno.test("the client's Host header cannot decide what counts as this service", async () => {

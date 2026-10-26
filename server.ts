@@ -52,6 +52,14 @@ const selfOriginsFromEnv = (): string[] => {
   return configuredOrigins;
 };
 
+/**
+ * Parse the configured self hosts now, and throw if they are malformed. `serve()` calls this BEFORE the
+ * socket is bound, so a typo stops the process from starting: the alternative is a deployment that looks
+ * healthy, answers the home page, and then fails every feed expansion with a 500 on the first request
+ * (full-rss-7mo). The per-request path parses defensively too, which is what the suites exercise.
+ */
+export const validateSelfHostsConfig = (): string[] => selfOriginsFromEnv();
+
 let warnedUnconfigured = false;
 
 /**
@@ -250,6 +258,10 @@ export const handleRequest = async (
 };
 
 export const serve = async (): Promise<void> => {
+  // Fail here, not on the first request: a malformed FULL_RSS_SELF_HOSTS is a deployment error, and a
+  // process that starts and then refuses every expansion is worse than one that refuses to start
+  // (full-rss-7mo).
+  validateSelfHostsConfig();
   // Open the KV handle at boot and only at boot: an unavailable KV must fail here, loudly, instead of
   // failing per article inside processFeed's error handling (which would silently degrade every feed to
   // summaries only).
