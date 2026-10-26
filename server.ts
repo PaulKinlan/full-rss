@@ -15,7 +15,9 @@ import {
   BlockedUrlError,
   guardedFetch,
   parseFetchableUrl,
+  parseSelfHosts,
   readCappedText,
+  resolveSelfAddresses,
   sanitizeForLog,
 } from "./egress.ts";
 
@@ -25,6 +27,79 @@ const MAX_FEED_BYTES = 2 * 1024 * 1024;
 // The full feed, including DNS, redirects, body reads and up to ten sequential article expansions,
 // has one budget in addition to each outbound fetch's per-hop timeout.
 const REQUEST_TIMEOUT_MS = 30_000;
+
+// Where this service names ITSELF. `req.url` cannot do it: it is built from the client's `Host` header (and an
+// absolute-form request line overrides it), so a client sending `Host: attacker.example` made the
+// self-expansion guard compare against the attacker's host and the amplification loop reopened (full-rss-647).
+// Comma/whitespace-separated `host`, `host:port` or origin; every deployment that expands feeds should set it.
+const SELF_HOSTS_ENV = "FULL_RSS_SELF_HOSTS";
+// How long this service's own resolved addresses are reused. They change only on a redeploy, and one lookup
+// per request would put a DNS round trip on the path of every expansion.
+const SELF_ADDRESS_TTL_MS = 5 * 60_000;
+// A failed lookup is retried soon rather than cached as "this service has no addresses".
+const SELF_ADDRESS_RETRY_MS = 30_000;
+
+let configuredRaw: string | null | undefined;
+let configuredOrigins: string[] = [];
+
+/** The configured self hosts, re-parsed only when the environment value changes (so a suite can set it). */
+const selfOriginsFromEnv = (): string[] => {
+  const raw = Deno.env.get(SELF_HOSTS_ENV) ?? null;
+  if (raw !== configuredRaw) {
+    configuredRaw = raw;
+    configuredOrigins = parseSelfHosts(raw ?? undefined);
+  }
+  return configuredOrigins;
+};
+
+let warnedUnconfigured = false;
+
+/**
+ * The hosts this service answers on. Configuration wins; the origin the request arrived on is only a
+ * development fallback when nothing is configured, and it says so in the log once, because in that mode a
+ * client-chosen `Host` decides what "this service" means (full-rss-647).
+ */
+const selfOriginsFor = (req: Request): string[] => {
+  const configured = selfOriginsFromEnv();
+  if (configured.length > 0) return configured;
+  if (!warnedUnconfigured) {
+    warnedUnconfigured = true;
+    console.warn(
+      `${SELF_HOSTS_ENV} is not set: this service is identifying itself by the request's own Host header, which the client chooses. Set it to this service's public host(s) in any deployment.`,
+    );
+  }
+  return [new URL(req.url).origin];
+};
+
+let selfAddressCache:
+  | { key: string; addresses: string[]; expiresAt: number }
+  | undefined;
+
+/** This service's own addresses, for the IP-literal and alias spellings of it (cached, best effort). */
+const selfAddressesFor = async (
+  origins: readonly string[],
+): Promise<string[]> => {
+  const key = origins.join(",");
+  const now = Date.now();
+  if (selfAddressCache?.key === key && now < selfAddressCache.expiresAt) {
+    return selfAddressCache.addresses;
+  }
+  let addresses: string[] = [];
+  try {
+    addresses = await resolveSelfAddresses(origins);
+  } catch (e) {
+    console.error(
+      sanitizeForLog(`Could not resolve this service's own addresses: ${e}`),
+    );
+  }
+  selfAddressCache = {
+    key,
+    addresses,
+    expiresAt: now +
+      (addresses.length > 0 ? SELF_ADDRESS_TTL_MS : SELF_ADDRESS_RETRY_MS),
+  };
+  return addresses;
+};
 
 // Every rendered page (including errors and the deadline retry page) uses the same policy. The index has
 // one inline style and no scripts; allow that style without allowing any script or external resource.
@@ -62,22 +137,25 @@ const handleFeedRequest = async (
     return new Response("Method not allowed", { status: 405 });
   }
 
-  const { searchParams, origin } = new URL(req.url);
+  const { searchParams } = new URL(req.url);
   const url = searchParams.get("url");
 
   if (!url) {
     return htmlResponse(undefined);
   }
 
-  // The origin the requester used is this service's own address, and nothing here may fetch it: a feed or
-  // article URL that points back at us is this service expanding itself, ten items at a time (full-rss-qxz).
-  const selfOrigins = [origin];
+  // The hosts this service answers on, AND the addresses they resolve to, and nothing here may fetch either: a
+  // feed or article URL that points back at us is this service expanding itself, ten items at a time
+  // (full-rss-qxz). Both come from configuration, never from the request - see SELF_HOSTS_ENV (full-rss-647).
+  const selfOrigins = selfOriginsFor(req);
+  const selfAddresses = await selfAddressesFor(selfOrigins);
+  const egressOptions = { selfOrigins, selfAddresses };
 
   // What we may fetch is egress.ts's decision: a typo keeps the historical 400, a target this service must
   // not fetch (private network, localhost, credentials, non-http) gets its own 403 (full-rss-apm).
   let target: URL;
   try {
-    target = await parseFetchableUrl(url, { selfOrigins });
+    target = await parseFetchableUrl(url, egressOptions);
   } catch (e) {
     if (e instanceof BlockedUrlError) {
       return htmlResponse(
@@ -98,7 +176,10 @@ const handleFeedRequest = async (
   let feedXml: string;
   try {
     signal.throwIfAborted();
-    const feedResponse = await guardedFetch(target, { signal, selfOrigins });
+    const feedResponse = await guardedFetch(target, {
+      signal,
+      ...egressOptions,
+    });
     if (!feedResponse.ok) {
       return htmlResponse(
         "There was an error fetching the feed. Please check the URL",
@@ -124,7 +205,7 @@ const handleFeedRequest = async (
   try {
     const feed = await parseFeed(feedXml);
     signal.throwIfAborted();
-    const fullFeed = await processFeed(feed, signal, { selfOrigins });
+    const fullFeed = await processFeed(feed, signal, egressOptions);
     signal.throwIfAborted();
 
     return new Response(exportFeed(fullFeed), { headers: FEED_HEADERS });

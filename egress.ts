@@ -225,13 +225,15 @@ const resolveForValidation: ResolveDns = async (hostname) => {
 
 /**
  * Options for the suites and for the caller's egress policy: an explicit resolver is always consulted,
- * permission gate or not, and `selfOrigins` names the origins this service answers on so a URL pointing
- * back at one of them can be refused (full-rss-qxz).
+ * permission gate or not, `selfOrigins` names the hosts this service answers on so a URL pointing back at one
+ * of them can be refused (full-rss-qxz), and `selfAddresses` names the same service by ADDRESS, which is what
+ * an IP literal or an alias hostname is spelled with (full-rss-647).
  */
 export type FetchUrlOptions = {
   resolveDns?: ResolveDns;
   signal?: AbortSignal;
   selfOrigins?: readonly string[];
+  selfAddresses?: readonly string[];
 };
 
 /**
@@ -261,6 +263,94 @@ const isOwnHost = (url: URL, origin: string): boolean => {
   } catch {
     return false;
   }
+};
+
+/**
+ * The configured hosts this service answers on, from a comma/whitespace-separated list: `host`, `host:port` or
+ * a full origin. This exists because the request's own URL cannot be trusted to name the service: `req.url` is
+ * built from the client's `Host` header (and an absolute-form request line overrides that), so `Host:
+ * attacker.example` made the self-expansion guard compare against the wrong host and the amplification loop
+ * reopened (full-rss-647). Configuration is the operator's statement of identity; the request is not.
+ *
+ * Entries are normalised through `new URL`, so a default port disappears and comparison stays by host:port. A
+ * malformed entry throws rather than being dropped: silently ignoring it would disable the guard while looking
+ * configured.
+ */
+export const parseSelfHosts = (raw: string | undefined): string[] => {
+  const origins: string[] = [];
+  for (const entry of (raw ?? "").split(/[\s,]+/)) {
+    if (entry === "") continue;
+    let url: URL;
+    try {
+      url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(entry) ? entry : `https://${entry}`);
+    } catch {
+      throw new Error(
+        `${entry} is not a host, host:port or origin to name this service by`,
+      );
+    }
+    if (url.hostname === "") {
+      throw new Error(`${entry} names no host for this service`);
+    }
+    origins.push(url.origin);
+  }
+  return origins;
+};
+
+/**
+ * A canonical key for an address literal, so two spellings of one address compare equal (and so an address can
+ * never be confused with a name). Returns null for anything that is not an IP literal.
+ */
+const addressKey = (raw: string): string | null => {
+  const v4 = parseIPv4(raw);
+  if (v4 != null) return `v4:${v4}`;
+  const v6 = parseIPv6(raw);
+  return v6 == null ? null : `v6:${v6.join(":")}`;
+};
+
+/** The addresses this service answers on, as comparable keys. Empty when none are configured. */
+const ownAddressKeys = (addresses: readonly string[] | undefined): Set<string> => {
+  const keys = new Set<string>();
+  for (const address of addresses ?? []) {
+    const key = addressKey(address);
+    if (key != null) keys.add(key);
+  }
+  return keys;
+};
+
+/**
+ * Resolve this service's own configured hosts to addresses, for the spelling the host comparison cannot see: a
+ * target that is our own public IP literal, or an alias hostname that resolves to it. Best effort by design -
+ * a lookup that fails leaves the host comparison, which is still correct, in place (and the residual is
+ * recorded in THREAT_MODEL.md).
+ */
+export const resolveSelfAddresses = async (
+  origins: readonly string[],
+  resolveDns?: ResolveDns,
+): Promise<string[]> => {
+  const resolver = resolveDns ??
+    (netPermissionGranted() ? resolveForValidation : undefined);
+  const addresses: string[] = [];
+  for (const origin of origins) {
+    let hostname: string;
+    try {
+      hostname = new URL(origin).hostname.replace(/^\[|\]$/g, "");
+    } catch {
+      continue;
+    }
+    if (hostname === "") continue;
+    // A configured literal needs no lookup: it is its own address.
+    if (addressKey(hostname) != null) {
+      addresses.push(hostname);
+      continue;
+    }
+    if (resolver == null) continue;
+    try {
+      addresses.push(...await resolver(hostname));
+    } catch {
+      // Unresolved: degrade to the host comparison rather than failing requests.
+    }
+  }
+  return addresses;
 };
 
 /**
@@ -307,6 +397,17 @@ export const parseFetchableUrl = async (
     throw new BlockedUrlError(`${address} carries a zone identifier`);
   }
 
+  // The same service, spelled by address instead of by name: our own IP literal, or an alias that resolves to
+  // it. The host comparison above cannot see either, and both reopen the loop the host check exists to close
+  // (full-rss-647).
+  const ownAddresses = ownAddressKeys(options?.selfAddresses);
+  if (ownAddresses.size > 0) {
+    const literal = addressKey(address);
+    if (literal != null && ownAddresses.has(literal)) {
+      throw new BlockedUrlError(`${url.host} is this service's own address`);
+    }
+  }
+
   const asIPv4 = parseIPv4(address);
   if (asIPv4 != null) {
     if (isBlockedIPv4(BigInt(asIPv4))) {
@@ -343,7 +444,7 @@ export const parseFetchableUrl = async (
         })`,
       );
     }
-    assertAnswersFetchable(address, answers);
+    assertAnswersFetchable(address, answers, ownAddresses);
     return url;
   }
 
@@ -363,15 +464,26 @@ export const parseFetchableUrl = async (
       })`,
     );
   }
-  assertAnswersFetchable(address, answers);
+  assertAnswersFetchable(address, answers, ownAddresses);
   return url;
 };
 
-const assertAnswersFetchable = (host: string, answers: string[]): void => {
+const assertAnswersFetchable = (
+  host: string,
+  answers: string[],
+  ownAddresses: Set<string>,
+): void => {
   if (answers.length === 0) {
     throw new BlockedUrlError(`${host} resolves nowhere`);
   }
   for (const answer of answers) {
+    const key = addressKey(answer);
+    if (key != null && ownAddresses.has(key)) {
+      // An alias hostname for this same service. Refused for the same reason as the literal spelling.
+      throw new BlockedUrlError(
+        `${host} resolves to this service's own address ${answer}`,
+      );
+    }
     const v4 = parseIPv4(answer);
     if (v4 != null) {
       if (isBlockedIPv4(BigInt(v4))) {

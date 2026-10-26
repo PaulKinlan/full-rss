@@ -136,9 +136,10 @@ Deno.test("a url aimed at a private or local target is refused with 403", async 
 });
 
 Deno.test("a url naming this service's own origin is refused with 403 and never fetched", async () => {
-  // The first-order amplification: the requester asks this service to expand this service. The origin that
-  // arrived with the request is the one that counts, so the request host is what the guard is given
-  // (full-rss-qxz).
+  // The first-order amplification: the requester asks this service to expand this service (full-rss-qxz). With
+  // no FULL_RSS_SELF_HOSTS configured this suite runs the development fallback, where the origin that arrived
+  // with the request is what the guard is given (see the Host-header test below for why a deployment must set
+  // it).
   let fetches = 0;
   await withStubbedFetch(
     () => {
@@ -167,6 +168,61 @@ Deno.test("a url naming this service's own origin is refused with 403 and never 
       assertEqual(fetches, 0, "the service did not fetch itself");
     },
   );
+});
+
+Deno.test("the client's Host header cannot decide what counts as this service", async () => {
+  // Regression (full-rss-647). `req.url` is built from the client's Host header (an absolute-form request line
+  // overrides it), so the guard used to compare against the ATTACKER's host: `Host: attacker.example` plus an
+  // item pointing at the service's real host reopened the amplification loop, and no address check could see
+  // it. Configuration is the only trustworthy statement of identity.
+  const previous = Deno.env.get("FULL_RSS_SELF_HOSTS");
+  Deno.env.set("FULL_RSS_SELF_HOSTS", "service.test");
+  let fetches = 0;
+  try {
+    await withStubbedFetch(
+      () => {
+        fetches++;
+        return new Response(FEED, { status: 200 });
+      },
+      async () => {
+        // The spoofed Host, verbatim from the finding: the request URL says attacker.example, the target is
+        // the real service.
+        const spoofed = await handleRequest(
+          new Request(
+            `http://attacker.example/?url=${
+              encodeURIComponent(
+                `https://service.test/?url=${
+                  encodeURIComponent("https://evil.test/feed.xml")
+                }`,
+              )
+            }`,
+          ),
+        );
+        assertEqual(spoofed.status, 403, "the spoofed Host does not get to define us");
+        assertIncludes(
+          await spoofed.text(),
+          "and not this service itself",
+          "the warning names self-reference",
+        );
+        assertEqual(fetches, 0, "the service did not fetch itself");
+
+        // The converse matters as much: a request that ARRIVES on a foreign Host is not this service, so a
+        // target on that foreign host is an ordinary feed and is not refused as self-reference.
+        const foreign = await handleRequest(
+          new Request(
+            `http://attacker.example/?url=${
+              encodeURIComponent("https://evil.test/feed.xml")
+            }`,
+          ),
+        );
+        assertEqual(foreign.status, 200, "a foreign-host request still expands ordinary feeds");
+        assertEqual(fetches, 1, "the ordinary feed was fetched once");
+      },
+    );
+  } finally {
+    if (previous === undefined) Deno.env.delete("FULL_RSS_SELF_HOSTS");
+    else Deno.env.set("FULL_RSS_SELF_HOSTS", previous);
+  }
 });
 
 Deno.test("a feed that redirects back to this service is refused with 403", async () => {
