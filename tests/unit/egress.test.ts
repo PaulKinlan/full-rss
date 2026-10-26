@@ -557,9 +557,9 @@ Deno.test("a redirect to this service by a terminal-dot spelling is refused too"
   );
 });
 
-Deno.test("this service's own IP literal, and an alias that resolves to it, are refused too", async () => {
-  // The host comparison is one exact key, so it cannot see the same service spelled another way: by address,
-  // or by a hostname that resolves to that address. Both reopened the loop (full-rss-647).
+Deno.test("this service's own IP literal is refused", async () => {
+  // The host comparison is one exact key, so it cannot see the same service spelled by address. That spelling
+  // reopened the loop (full-rss-647).
   await assertRejects(
     () =>
       parseFetchableUrl("http://93.184.216.34/?url=x", {
@@ -568,24 +568,14 @@ Deno.test("this service's own IP literal, and an alias that resolves to it, are 
     "this service's own address",
     "the IP-literal spelling of this service",
   );
-  await assertRejects(
-    () =>
-      parseFetchableUrl("https://alias.test/feed.xml", {
-        resolveDns: resolver(["93.184.216.34"]),
-        selfAddresses: ["93.184.216.34"],
-      }),
-    "resolves to this service's own address",
-    "an alias hostname for this service",
-  );
   // An address that is NOT ours stays fetchable, and so does a literal when no self address is configured.
-  const other = await parseFetchableUrl("https://other.test/feed.xml", {
-    resolveDns: resolver(["93.184.216.35"]),
+  const other = await parseFetchableUrl("https://93.184.216.35/feed.xml", {
     selfAddresses: ["93.184.216.34"],
   });
   assertEqual(
     other.href,
-    "https://other.test/feed.xml",
-    "another host stays fetchable",
+    "https://93.184.216.35/feed.xml",
+    "another literal is fetchable",
   );
   const literal = await parseFetchableUrl("https://93.184.216.34/feed.xml", {
     selfAddresses: [],
@@ -595,6 +585,34 @@ Deno.test("this service's own IP literal, and an alias that resolves to it, are 
     "https://93.184.216.34/feed.xml",
     "no self address configured: no refusal",
   );
+});
+
+Deno.test("a shared CDN address is not an identity: an unrelated feed on our address is fetchable", () => {
+  // Regression (full-rss-og0): comparing a target's RESOLVED addresses against ours refused every ordinary
+  // feed behind the same CDN or reverse proxy, which is most of them for a hosted deployment. Only the
+  // literal spelling is judged by address now.
+  return (async () => {
+    const shared = resolver(["93.184.216.34"]);
+    const options = {
+      resolveDns: shared,
+      selfOrigins: ["https://service.example"],
+      selfAddresses: ["93.184.216.34"],
+    };
+    await assertRejects(
+      () => parseFetchableUrl("https://service.example/feed", options),
+      "this service's own address",
+      "the service itself is still refused, by host",
+    );
+    const unrelated = await parseFetchableUrl(
+      "https://unrelated.example/feed",
+      options,
+    );
+    assertEqual(
+      unrelated.href,
+      "https://unrelated.example/feed",
+      "an unrelated feed on the same address stays fetchable",
+    );
+  })();
 });
 
 Deno.test("a self address is compared by value, not by spelling", async () => {
@@ -634,14 +652,27 @@ Deno.test("self hosts come from configuration, parsed strictly", () => {
     "a default port is dropped, so the comparison is by host:port",
   );
   // A typo must fail loudly: a silently dropped entry would disable the guard while looking configured.
-  // (Whitespace separates entries, so the smallest typo is a malformed port.)
-  let threw = false;
-  try {
-    parseSelfHosts("service.test:notaport");
-  } catch {
-    threw = true;
+  // (Whitespace separates entries, so the smallest typo is a malformed port.) The same rule must catch an
+  // entry that parses but does not MEAN the host it looks like.
+  for (
+    const bad of [
+      "service.test:notaport",
+      // `new URL` discards the userinfo, so this would configure the ATTACKER's host and leave the real
+      // service fetchable with no warning (full-rss-56w).
+      "https://service.test@attacker.test",
+      "https://service.test/some/path",
+      "https://service.test/?x=1",
+      "https://service.test#frag",
+    ]
+  ) {
+    let threw = false;
+    try {
+      parseSelfHosts(bad);
+    } catch {
+      threw = true;
+    }
+    assert(threw, `${bad} is refused rather than reinterpreted`);
   }
-  assert(threw, "a malformed entry throws");
 });
 
 Deno.test("resolveSelfAddresses uses a literal as its own address and resolves a name", async () => {
@@ -660,8 +691,10 @@ Deno.test("resolveSelfAddresses uses a literal as its own address and resolves a
   );
   // A lookup that fails leaves the host comparison in place rather than failing every request.
   assertEqual(
-    (await resolveSelfAddresses(["https://gone.test"], () =>
-      Promise.reject(new Error("NXDOMAIN")))).length,
+    (await resolveSelfAddresses(
+      ["https://gone.test"],
+      () => Promise.reject(new Error("NXDOMAIN")),
+    )).length,
     0,
     "a failed lookup degrades to the host comparison",
   );

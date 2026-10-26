@@ -198,7 +198,11 @@ Deno.test("the client's Host header cannot decide what counts as this service", 
             }`,
           ),
         );
-        assertEqual(spoofed.status, 403, "the spoofed Host does not get to define us");
+        assertEqual(
+          spoofed.status,
+          403,
+          "the spoofed Host does not get to define us",
+        );
         assertIncludes(
           await spoofed.text(),
           "and not this service itself",
@@ -215,7 +219,11 @@ Deno.test("the client's Host header cannot decide what counts as this service", 
             }`,
           ),
         );
-        assertEqual(foreign.status, 200, "a foreign-host request still expands ordinary feeds");
+        assertEqual(
+          foreign.status,
+          200,
+          "a foreign-host request still expands ordinary feeds",
+        );
         assertEqual(fetches, 1, "the ordinary feed was fetched once");
       },
     );

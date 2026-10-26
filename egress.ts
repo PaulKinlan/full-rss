@@ -274,7 +274,12 @@ const isOwnHost = (url: URL, origin: string): boolean => {
  *
  * Entries are normalised through `new URL`, so a default port disappears and comparison stays by host:port. A
  * malformed entry throws rather than being dropped: silently ignoring it would disable the guard while looking
- * configured.
+ * configured. That strictness now extends to the parts a HOST cannot have: a userinfo, path, query or fragment
+ * in the entry means the operator meant something other than what would be compared, and `new URL` would
+ * happily discard the difference - `https://service.example@attacker.example` parses to the origin
+ * `https://attacker.example`, so a typo'd or copy-pasted credential URL would make the guard trust the
+ * ATTORNEY's host and refuse the real service, with no warning because a non-empty list parsed fine
+ * (full-rss-56w).
  */
 export const parseSelfHosts = (raw: string | undefined): string[] => {
   const origins: string[] = [];
@@ -282,7 +287,9 @@ export const parseSelfHosts = (raw: string | undefined): string[] => {
     if (entry === "") continue;
     let url: URL;
     try {
-      url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(entry) ? entry : `https://${entry}`);
+      url = new URL(
+        /^[a-z][a-z0-9+.-]*:\/\//i.test(entry) ? entry : `https://${entry}`,
+      );
     } catch {
       throw new Error(
         `${entry} is not a host, host:port or origin to name this service by`,
@@ -290,6 +297,19 @@ export const parseSelfHosts = (raw: string | undefined): string[] => {
     }
     if (url.hostname === "") {
       throw new Error(`${entry} names no host for this service`);
+    }
+    if (url.username !== "" || url.password !== "") {
+      throw new Error(
+        `${entry} carries credentials; name this service by its host, not by a credentialed URL`,
+      );
+    }
+    if (
+      (url.pathname !== "" && url.pathname !== "/") || url.search !== "" ||
+      url.hash !== ""
+    ) {
+      throw new Error(
+        `${entry} carries a path, query or fragment; name this service by its host only`,
+      );
     }
     origins.push(url.origin);
   }
@@ -308,7 +328,9 @@ const addressKey = (raw: string): string | null => {
 };
 
 /** The addresses this service answers on, as comparable keys. Empty when none are configured. */
-const ownAddressKeys = (addresses: readonly string[] | undefined): Set<string> => {
+const ownAddressKeys = (
+  addresses: readonly string[] | undefined,
+): Set<string> => {
   const keys = new Set<string>();
   for (const address of addresses ?? []) {
     const key = addressKey(address);
@@ -318,10 +340,16 @@ const ownAddressKeys = (addresses: readonly string[] | undefined): Set<string> =
 };
 
 /**
- * Resolve this service's own configured hosts to addresses, for the spelling the host comparison cannot see: a
- * target that is our own public IP literal, or an alias hostname that resolves to it. Best effort by design -
- * a lookup that fails leaves the host comparison, which is still correct, in place (and the residual is
- * recorded in THREAT_MODEL.md).
+ * Resolve this service's own configured hosts to addresses, so the guard can also refuse a target that spells
+ * this service as its own IP literal. Best effort by design - a lookup that fails leaves the host comparison,
+ * which is still correct, in place (and the residual is recorded in THREAT_MODEL.md).
+ *
+ * Why the answers are not compared against a TARGET's answers. An address is not an identity behind a shared
+ * front: services hosted behind one CDN or reverse proxy (Cloudflare, Deno Deploy's edge, Vercel) share public
+ * addresses with thousands of unrelated sites, so "unrelated.example resolves to our address" proved nothing
+ * and refused every ordinary feed on that shared edge - a far worse failure than the hole it closed
+ * (full-rss-og0). Only an IP LITERAL is compared, which is a statement about the target's spelling rather than
+ * about who else lives at that address, and an alias hostname for this service is left as a recorded residual.
  */
 export const resolveSelfAddresses = async (
   origins: readonly string[],
@@ -397,9 +425,10 @@ export const parseFetchableUrl = async (
     throw new BlockedUrlError(`${address} carries a zone identifier`);
   }
 
-  // The same service, spelled by address instead of by name: our own IP literal, or an alias that resolves to
-  // it. The host comparison above cannot see either, and both reopen the loop the host check exists to close
-  // (full-rss-647).
+  // The same service, spelled as its own IP literal rather than by name. The host comparison above cannot see
+  // that, and it reopens the loop the host check exists to close (full-rss-647). A hostname is deliberately
+  // NOT judged by the addresses it resolves to: behind a shared CDN that would refuse unrelated feeds
+  // (full-rss-og0); see resolveSelfAddresses.
   const ownAddresses = ownAddressKeys(options?.selfAddresses);
   if (ownAddresses.size > 0) {
     const literal = addressKey(address);
@@ -444,7 +473,7 @@ export const parseFetchableUrl = async (
         })`,
       );
     }
-    assertAnswersFetchable(address, answers, ownAddresses);
+    assertAnswersFetchable(address, answers);
     return url;
   }
 
@@ -464,26 +493,15 @@ export const parseFetchableUrl = async (
       })`,
     );
   }
-  assertAnswersFetchable(address, answers, ownAddresses);
+  assertAnswersFetchable(address, answers);
   return url;
 };
 
-const assertAnswersFetchable = (
-  host: string,
-  answers: string[],
-  ownAddresses: Set<string>,
-): void => {
+const assertAnswersFetchable = (host: string, answers: string[]): void => {
   if (answers.length === 0) {
     throw new BlockedUrlError(`${host} resolves nowhere`);
   }
   for (const answer of answers) {
-    const key = addressKey(answer);
-    if (key != null && ownAddresses.has(key)) {
-      // An alias hostname for this same service. Refused for the same reason as the literal spelling.
-      throw new BlockedUrlError(
-        `${host} resolves to this service's own address ${answer}`,
-      );
-    }
     const v4 = parseIPv4(answer);
     if (v4 != null) {
       if (isBlockedIPv4(BigInt(v4))) {
