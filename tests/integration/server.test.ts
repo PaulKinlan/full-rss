@@ -186,6 +186,20 @@ Deno.test("a malformed FULL_RSS_SELF_HOSTS fails the boot check, not the first r
     }
     assert(threw, "a credentialed entry fails the boot check");
 
+    // And it must throw on EVERY read, not only the first: caching the raw value before parsing meant the
+    // second call matched the cache and returned the previous (empty) origins, so the process would carry on
+    // with "no configured hosts" and fall back to the client's Host header (full-rss-4rs).
+    let threwAgain = false;
+    try {
+      validateSelfHostsConfig();
+    } catch {
+      threwAgain = true;
+    }
+    assert(
+      threwAgain,
+      "a malformed value throws on every read, not just the first",
+    );
+
     Deno.env.set("FULL_RSS_SELF_HOSTS", "service.test,www.service.test");
     assertEqual(
       validateSelfHostsConfig().length,

@@ -42,14 +42,22 @@ const SELF_ADDRESS_RETRY_MS = 30_000;
 let configuredRaw: string | null | undefined;
 let configuredOrigins: string[] = [];
 
-/** The configured self hosts, re-parsed only when the environment value changes (so a suite can set it). */
+/**
+ * The configured self hosts, re-parsed only when the environment value changes (so a suite can set it).
+ *
+ * PARSE FIRST, ASSIGN AFTER. Caching the raw value before parsing it made a malformed configuration throw once
+ * and then quietly return the previous (empty) origins, because the second read matched the cache key and
+ * skipped the parse - i.e. the value the process would then guard with was "this service has no configured
+ * hosts", which falls back to the client-chosen Host header, the very hole this configuration exists to close
+ * (full-rss-4rs). A malformed value must throw on every read.
+ */
 const selfOriginsFromEnv = (): string[] => {
   const raw = Deno.env.get(SELF_HOSTS_ENV) ?? null;
-  if (raw !== configuredRaw) {
-    configuredRaw = raw;
-    configuredOrigins = parseSelfHosts(raw ?? undefined);
-  }
-  return configuredOrigins;
+  if (raw === configuredRaw) return configuredOrigins;
+  const parsed = parseSelfHosts(raw ?? undefined);
+  configuredRaw = raw;
+  configuredOrigins = parsed;
+  return parsed;
 };
 
 /**
@@ -83,7 +91,11 @@ let selfAddressCache:
   | { key: string; addresses: string[]; expiresAt: number }
   | undefined;
 
-/** This service's own addresses, for the IP-literal and alias spellings of it (cached, best effort). */
+/**
+ * This service's own addresses, for the IP-LITERAL spelling of it only (cached, best effort). A target's
+ * resolved answers are never compared against these - see resolveSelfAddresses for why a shared CDN address
+ * cannot establish identity (full-rss-og0).
+ */
 const selfAddressesFor = async (
   origins: readonly string[],
 ): Promise<string[]> => {
