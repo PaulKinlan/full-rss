@@ -433,6 +433,119 @@ Deno.test("a long log value costs linear time, not quadratic", () => {
   );
 });
 
+// --- self-reference: this service may not fetch itself ------------------------------------------------
+//
+// A feed can link back at the service that is expanding it, and one expansion is up to ten more: that is an
+// amplification loop, and no private address is involved, so none of the address checks above catch it. The
+// caller passes the host the request arrived on (`selfOrigins`); anything on that host is refused (full-rss-qxz).
+
+Deno.test("a URL on this service's own host is refused, whatever its scheme, path or spelling", async () => {
+  for (
+    const url of [
+      "https://service.test/?url=https%3A%2F%2Fevil.test%2Ffeed.xml",
+      "http://service.test/feed.xml",
+      "https://SERVICE.test/expand?url=x",
+      // The root-anchored (FQDN) spelling of the same DNS host: `new URL` keeps the terminal dot, so a
+      // naive host comparison let one appended character through (full-rss-pbz).
+      "https://service.test./feed.xml",
+      "https://SERVICE.test./expand?url=x",
+    ]
+  ) {
+    await assertRejects(
+      () => parseFetchableUrl(url, { selfOrigins: ["https://service.test"] }),
+      "this service's own address",
+      `${url} to be refused as this service itself`,
+    );
+  }
+});
+
+Deno.test("an origin written with a terminal dot is still this service", async () => {
+  // The caller's own origin spelling must not swap the hole around: both sides are normalised.
+  await assertRejects(
+    () =>
+      parseFetchableUrl("https://service.test/feed.xml", {
+        selfOrigins: ["https://service.test."],
+      }),
+    "this service's own address",
+    "a terminal-dot origin refuses the plain host",
+  );
+});
+
+Deno.test("the own-host check is exact: another port, host or subdomain is not this service", async () => {
+  for (
+    const url of [
+      "https://service.test:8443/feed.xml",
+      "https://other.test/feed.xml",
+      "https://sub.service.test/feed.xml",
+      // A terminal dot on ANOTHER host is that host's FQDN form, not this service.
+      "https://other.test./feed.xml",
+      // ... and the same host on a different port is a different service.
+      "https://service.test.:8443/feed.xml",
+    ]
+  ) {
+    const parsed = await parseFetchableUrl(url, {
+      resolveDns: resolver(PUBLIC_A),
+      selfOrigins: ["https://service.test"],
+    });
+    assertEqual(parsed.href, url, `${url} stays fetchable`);
+  }
+});
+
+Deno.test("no self origins configured means the check never fires", async () => {
+  const url = await parseFetchableUrl("https://service.test/feed.xml");
+  assertEqual(url.hostname, "service.test", "hostname");
+});
+
+Deno.test("a redirect back to this service's own host is refused before that hop is fetched", async () => {
+  const fetched: string[] = [];
+  await withStubbedFetch(
+    (url) => {
+      fetched.push(url);
+      return new Response("", {
+        status: 302,
+        headers: {
+          location: "https://service.test/?url=https%3A%2F%2Fevil.test%2F",
+        },
+      });
+    },
+    async () => {
+      await assertRejects(
+        () =>
+          guardedFetch("https://elsewhere.test/feed.xml", {
+            selfOrigins: ["https://service.test"],
+          }),
+        "this service's own address",
+        "a redirect aimed back at this service",
+      );
+      assertEqual(fetched.length, 1, "only the off-service hop was fetched");
+    },
+  );
+});
+
+Deno.test("a redirect to this service by a terminal-dot spelling is refused too", async () => {
+  const fetched: string[] = [];
+  await withStubbedFetch(
+    (url) => {
+      fetched.push(url);
+      return new Response("", {
+        status: 302,
+        headers: { location: "https://service.test./?url=x" },
+      });
+    },
+    async () => {
+      await assertRejects(
+        () =>
+          guardedFetch("https://elsewhere.test/feed.xml", {
+            selfOrigins: ["https://service.test"],
+          }),
+        "this service's own address",
+        "a terminal-dot redirect back at this service",
+      );
+      assertEqual(fetched.length, 1, "only the off-service hop was fetched");
+    },
+  );
+});
+
 // --- guardedFetch: redirects re-validated ----------------------------------------------------------------
 
 Deno.test("a direct 200 is returned as-is and fetched with manual redirects and a timeout", async () => {

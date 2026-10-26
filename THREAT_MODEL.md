@@ -19,7 +19,8 @@ rather than guess it.
   strings or userinfo. Logs must not leak them.
 - **Memory and time.** An upstream may answer with an unbounded body, a slow
   stream, or a redirect loop; none may pin the service's memory or a request
-  forever.
+  forever. One requester's expansion also may not become unbounded work: a feed
+  or article that points back at this service must not make it expand itself.
 - **Feed readers' trust in the output.** Everything in the returned document
   that came from the feed publisher — item bodies, summaries, titles, authors —
   is attacker-controlled markup or text. A feed reader renders item HTML; raw
@@ -60,7 +61,21 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   reading them literally would refuse every client below `240.0.0.0/4` (8.8.8.8
   is stored `f7f7:f7f7`) instead of the private ones.
 - **names meaning "here"** — `localhost`, `*.localhost`, `local`, `internal` —
-  before DNS is consulted.
+  before DNS is consulted;
+- **URLs on this service's own host.** The server passes the origin the request
+  arrived on (`selfOrigins`), and any URL whose host matches it is refused
+  (`<host> is this service's own address`). This is the recursive-amplification
+  guard (full-rss-qxz): a feed whose items link back at the expander would turn
+  one request into a tree of them, ten items per level, and the target is a
+  public address, so no range check would ever see it. `host` rather than
+  `origin` is compared deliberately — an `http://` reference to the same host
+  reaches the same service through the platform's own https redirect. Both sides
+  are normalised first: lower-cased, default port dropped, and **terminal dots
+  removed**, because `service.test.` is the root-anchored spelling of the same
+  DNS host while `new URL()` preserves the dot — comparing the raw `host` let
+  one appended character through (full-rss-pbz). The guard also covers the
+  requester's `?url=` and every redirect hop, because `guardedFetch` re-runs
+  this function per hop.
 
 ### DNS validation
 
@@ -115,7 +130,11 @@ surviving prefix is already sanitized; the cut never splits a surrogate pair.
   dropping `script`/`style`/`iframe`/`nav`/`header`/`footer`/`img`/banner and
   navigation roles, unwrapping links), renders it back with `marked`, and runs
   it through `sanitize-html` defaults before it enters the feed. The KV cache
-  stores the gzipped markdown, never the source HTML.
+  stores the gzipped markdown, never the source HTML. Only a **2xx** response is
+  converted and cached: a 4xx/5xx body is an error page, and caching it for the
+  TTL would serve an error to every later requester of that URL as if it were
+  the article (full-rss-qxz). A non-2xx expansion therefore fails, and the item
+  keeps the feed's own summary like any other expansion failure.
 - `feed.ts` sanitizes **feed-supplied** item markup (`content:encoded` and
   `description`) with the same `sanitize-html` defaults at the single export
   boundary, so items whose expansion was skipped or fell back cannot carry
@@ -173,6 +192,13 @@ Known limits that are accepted deliberately:
    observes it; the 30-second request race in `server.ts` bounds even
    non-cancellable work (DNS, KV, parsing) for the response, though the losing
    work may still finish in the background.
+7. **The self-reference guard is per-host, not per-deployment.** It refuses the
+   host the request arrived on. A second deployment of this same service on a
+   different hostname (a preview URL, a custom domain that is not the one in
+   `req.url`, or another operator's instance) is an ordinary public host to the
+   guard, so a feed linking to _that_ copy is not detected. Closing it would
+   need a registry of deployment hostnames, which the service does not have; the
+   per-request 30-second deadline and the 10-article cap remain the bound.
 
 ## Change discipline
 

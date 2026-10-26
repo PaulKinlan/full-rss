@@ -62,22 +62,26 @@ const handleFeedRequest = async (
     return new Response("Method not allowed", { status: 405 });
   }
 
-  const { searchParams } = new URL(req.url);
+  const { searchParams, origin } = new URL(req.url);
   const url = searchParams.get("url");
 
   if (!url) {
     return htmlResponse(undefined);
   }
 
+  // The origin the requester used is this service's own address, and nothing here may fetch it: a feed or
+  // article URL that points back at us is this service expanding itself, ten items at a time (full-rss-qxz).
+  const selfOrigins = [origin];
+
   // What we may fetch is egress.ts's decision: a typo keeps the historical 400, a target this service must
   // not fetch (private network, localhost, credentials, non-http) gets its own 403 (full-rss-apm).
   let target: URL;
   try {
-    target = await parseFetchableUrl(url);
+    target = await parseFetchableUrl(url, { selfOrigins });
   } catch (e) {
     if (e instanceof BlockedUrlError) {
       return htmlResponse(
-        "This URL cannot be fetched: only public http(s) addresses are supported, not private, local or reserved networks.",
+        "This URL cannot be fetched: only public http(s) addresses are supported, not private, local or reserved networks - and not this service itself.",
         403,
       );
     }
@@ -94,7 +98,7 @@ const handleFeedRequest = async (
   let feedXml: string;
   try {
     signal.throwIfAborted();
-    const feedResponse = await guardedFetch(target, { signal });
+    const feedResponse = await guardedFetch(target, { signal, selfOrigins });
     if (!feedResponse.ok) {
       return htmlResponse(
         "There was an error fetching the feed. Please check the URL",
@@ -106,7 +110,7 @@ const handleFeedRequest = async (
     if (e instanceof BlockedUrlError) {
       // The feed redirected somewhere this service must not follow.
       return htmlResponse(
-        "This feed redirected to a URL that cannot be fetched (a private, local or reserved network address).",
+        "This feed redirected to a URL that cannot be fetched (a private, local or reserved network address, or this service itself).",
         403,
       );
     }
@@ -120,7 +124,7 @@ const handleFeedRequest = async (
   try {
     const feed = await parseFeed(feedXml);
     signal.throwIfAborted();
-    const fullFeed = await processFeed(feed, signal);
+    const fullFeed = await processFeed(feed, signal, { selfOrigins });
     signal.throwIfAborted();
 
     return new Response(exportFeed(fullFeed), { headers: FEED_HEADERS });

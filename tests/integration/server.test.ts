@@ -135,6 +135,68 @@ Deno.test("a url aimed at a private or local target is refused with 403", async 
   }
 });
 
+Deno.test("a url naming this service's own origin is refused with 403 and never fetched", async () => {
+  // The first-order amplification: the requester asks this service to expand this service. The origin that
+  // arrived with the request is the one that counts, so the request host is what the guard is given
+  // (full-rss-qxz).
+  let fetches = 0;
+  await withStubbedFetch(
+    () => {
+      fetches++;
+      return new Response("unexpected", { status: 200 });
+    },
+    async () => {
+      // The root-anchored (FQDN) spelling of the same host is the same service (full-rss-pbz).
+      for (
+        const self of [
+          "https://service.test/?url=https%3A%2F%2Fevil.test%2Ffeed.xml",
+          "https://service.test./?url=https%3A%2F%2Fevil.test%2Ffeed.xml",
+        ]
+      ) {
+        const res = await handleRequest(
+          new Request(`https://service.test/?url=${encodeURIComponent(self)}`),
+        );
+        assertEqual(res.status, 403, `status for ${self}`);
+        assertHtmlHeaders(res);
+        assertIncludes(
+          await res.text(),
+          "and not this service itself",
+          "the warning names self-reference",
+        );
+      }
+      assertEqual(fetches, 0, "the service did not fetch itself");
+    },
+  );
+});
+
+Deno.test("a feed that redirects back to this service is refused with 403", async () => {
+  // Redirect hops get the same policy as the first request, so a public feed that 302s back at us cannot
+  // start the loop from the other end.
+  await withStubbedFetch(
+    () =>
+      new Response("", {
+        status: 302,
+        headers: {
+          location: "https://service.test/?url=https%3A%2F%2Fevil.test%2F",
+        },
+      }),
+    async () => {
+      const res = await handleRequest(
+        new Request(
+          "https://service.test/?url=" +
+            encodeURIComponent("https://example.com/feed.xml"),
+        ),
+      );
+      assertEqual(res.status, 403, "status");
+      assertIncludes(
+        await res.text(),
+        "redirected to a URL that cannot be fetched",
+        "the warning message",
+      );
+    },
+  );
+});
+
 Deno.test("a feed that redirects to a private target is refused with 403", async () => {
   await withStubbedFetch(
     () =>

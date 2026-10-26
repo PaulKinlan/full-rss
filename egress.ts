@@ -223,8 +223,45 @@ const resolveForValidation: ResolveDns = async (hostname) => {
 
 // --- URL validation -------------------------------------------------------------------------------------
 
-/** Options are for the suites: an explicit resolver is always consulted, permission gate or not. */
-export type FetchUrlOptions = { resolveDns?: ResolveDns; signal?: AbortSignal };
+/**
+ * Options for the suites and for the caller's egress policy: an explicit resolver is always consulted,
+ * permission gate or not, and `selfOrigins` names the origins this service answers on so a URL pointing
+ * back at one of them can be refused (full-rss-qxz).
+ */
+export type FetchUrlOptions = {
+  resolveDns?: ResolveDns;
+  signal?: AbortSignal;
+  selfOrigins?: readonly string[];
+};
+
+/**
+ * The host a URL names, normalised for comparison: lower-cased, terminal dots removed, and the port kept
+ * only when it is not the scheme's default (WHATWG URL drops a default port, so two spellings of the same
+ * service agree).
+ *
+ * The terminal dot is load-bearing. "service.test." is the root-anchored (FQDN) spelling of the very same
+ * DNS host as "service.test", and `new URL()` preserves it - so comparing `host` directly let a feed or a
+ * `?url=` reach this service by appending one character, which is the whole amplification loop again
+ * (full-rss-pbz). The address and name checks below strip it for the same reason.
+ */
+const hostKey = (url: URL): string => {
+  const hostname = url.hostname.toLowerCase().replace(/\.+$/, "");
+  return url.port === "" ? hostname : `${hostname}:${url.port}`;
+};
+
+/**
+ * True when `url` names a host this service answers on. Compared by host (which includes a non-default
+ * port) rather than by origin, deliberately: an `http://` reference to the same host reaches the same
+ * service through the platform's own https redirect, so the scheme must not open a way around the check.
+ * An origin the caller handed us that does not parse cannot mean "this service", so it matches nothing.
+ */
+const isOwnHost = (url: URL, origin: string): boolean => {
+  try {
+    return hostKey(new URL(origin)) === hostKey(url);
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Parse a URL this service may fetch, or throw. An unparseable input throws `Error("Invalid URL ...")` -
@@ -245,6 +282,15 @@ export const parseFetchableUrl = async (
   }
   if (url.username !== "" || url.password !== "") {
     throw new BlockedUrlError(`${url.host} carries credentials`);
+  }
+
+  // A URL on this service's own host is not a feed or an article: fetching it is this service requesting
+  // itself (full-rss-qxz). That is the amplification loop - one request expands up to ten items, each of
+  // which could expand up to ten more - and it needs no private address, so none of the checks below see
+  // it. Decided here rather than in feed.ts so it also covers the requester's `?url=`, and every redirect
+  // hop for free (guardedFetch re-runs this function per hop).
+  if ((options?.selfOrigins ?? []).some((origin) => isOwnHost(url, origin))) {
+    throw new BlockedUrlError(`${url.host} is this service's own address`);
   }
 
   const host = url.hostname.toLowerCase().replace(/\.+$/, "");

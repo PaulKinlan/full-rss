@@ -10,6 +10,7 @@
 // injectable `store` - the decompression budget in particular (full-rss-sc4).
 import {
   assert,
+  assertEqual,
   assertExcludes,
   assertIncludes,
   assertRejects,
@@ -125,6 +126,146 @@ Deno.test("a cached article that decompresses past the byte cap is refused", asy
     `exceeds the ${CAPPED_BYTES}-byte budget`,
     "a cached article that expands past the cap",
   );
+});
+
+Deno.test("a 2xx article is converted and cached", async () => {
+  // The positive half of the pair below: the status check must not stop a normal article from reaching the
+  // cache.
+  const originalFetch = globalThis.fetch;
+  const writes: unknown[] = [];
+  globalThis.fetch =
+    (() => Promise.resolve(new Response(PAGE))) as typeof globalThis.fetch;
+  const store = {
+    get: () => Promise.resolve({ value: null }),
+    set: (key: unknown, value: unknown) => {
+      writes.push([key, value]);
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  try {
+    const html = await fetchContent(
+      "https://example.com/post",
+      undefined,
+      store,
+    );
+    assertIncludes(html, "Hello world.", "the converted article");
+    assertEqual(writes.length, 1, "the 2xx article is cached once");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("a non-2xx article response is neither converted nor cached", async () => {
+  // A 404/500 body is an error page, not the article: converting it would cache that page as the article's
+  // full content for the whole TTL, and a cached error is indistinguishable from real content to everyone
+  // who asks for that URL afterwards (full-rss-qxz). The fetch fails instead, so feed.ts keeps the feed's
+  // own summary for the item.
+  const originalFetch = globalThis.fetch;
+  const writes: unknown[] = [];
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response("<html><body><h1>Not found</h1></body></html>", {
+        status: 404,
+      }),
+    )) as typeof globalThis.fetch;
+  const store = {
+    get: () => Promise.resolve({ value: null }),
+    set: (key: unknown, value: unknown) => {
+      writes.push([key, value]);
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  try {
+    await assertRejects(
+      () => fetchContent("https://example.com/missing", undefined, store),
+      "HTTP 404",
+      "a 404 article response",
+    );
+    assertEqual(writes.length, 0, "nothing was cached for a non-2xx article");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("a 304 is not an article either", async () => {
+  // `ok` is 200-299: a 304 carries no body to convert, and caching the empty markdown would be worse than
+  // failing the expansion.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(null, { status: 304 }),
+    )) as typeof globalThis.fetch;
+  const store = {
+    get: () => Promise.resolve({ value: null }),
+    set: () => Promise.resolve({ ok: true }),
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  try {
+    await assertRejects(
+      () => fetchContent("https://example.com/not-modified", undefined, store),
+      "HTTP 304",
+      "a 304 article response",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("an article URL on this service's own host is refused before any fetch or cache read", async () => {
+  // The second-order amplification loop: the feed's item links back at this service, which would expand it
+  // again, ten items at a time (full-rss-qxz). The refusal happens in egress.ts, so it precedes both the
+  // network and the KV read.
+  const originalFetch = globalThis.fetch;
+  let fetched = 0;
+  let cacheReads = 0;
+  globalThis.fetch = (() => {
+    fetched++;
+    return Promise.resolve(new Response(PAGE));
+  }) as typeof globalThis.fetch;
+  const store = {
+    get: () => {
+      cacheReads++;
+      return Promise.resolve({ value: null });
+    },
+    set: () => Promise.resolve({ ok: true }),
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  try {
+    await assertRejects(
+      () =>
+        fetchContent(
+          "https://service.test/?url=https%3A%2F%2Fevil.test%2Ffeed.xml",
+          undefined,
+          store,
+          { selfOrigins: ["https://service.test"] },
+        ),
+      "this service's own address",
+      "an article link back at this service",
+    );
+    assertEqual(fetched, 0, "this service never fetched itself");
+    assertEqual(cacheReads, 0, "the cache was not consulted first");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("an egress policy does not block articles on other hosts", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch =
+    (() => Promise.resolve(new Response(PAGE))) as typeof globalThis.fetch;
+  const store = {
+    get: () => Promise.resolve({ value: null }),
+    set: () => Promise.resolve({ ok: true }),
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  try {
+    const html = await fetchContent(
+      "https://example.com/post",
+      undefined,
+      store,
+      { selfOrigins: ["https://service.test"] },
+    );
+    assertIncludes(html, "Hello world.", "a public article still expands");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 Deno.test("fetchContent rejects a URL that cannot be parsed, before any network call", async () => {

@@ -14,6 +14,7 @@ import TurndownService from "turndown";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import {
+  type FetchUrlOptions,
   guardedFetch,
   parseFetchableUrl,
   readCappedStream,
@@ -85,11 +86,19 @@ export const fetchContent = async (
   url: string,
   signal?: AbortSignal,
   store?: Pick<Deno.Kv, "get" | "set">,
+  options?: FetchUrlOptions,
 ): Promise<string> => {
+  // The caller's egress policy travels with the request: `selfOrigins` (this service's own host, so an
+  // article link cannot point back at us - full-rss-qxz) and any resolver a suite injects.
+  const egressOptions: FetchUrlOptions = {
+    ...options,
+    signal: signal ?? options?.signal,
+  };
+
   // What we may fetch is egress.ts's decision, not ours: this both keeps the historical "Invalid URL"
   // contract (the unit suite pins it) and refuses private/local targets before any network or cache work
   // (full-rss-apm - the second-order SSRF lived in this fetch).
-  const target = await parseFetchableUrl(url);
+  const target = await parseFetchableUrl(url, egressOptions);
 
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
   const cache = store ?? await kv();
@@ -102,12 +111,21 @@ export const fetchContent = async (
 
   if (content == null) {
     // Think about queing this later.
-    const newFeed = await guardedFetch(target, { signal });
+    const response = await guardedFetch(target, egressOptions);
+
+    // Only a 2xx is the article. A 4xx/5xx body is an error page, and converting it would put that page
+    // in the cache as the article's full content for the whole TTL - an error indistinguishable from
+    // real content to every later requester (full-rss-qxz). Failing here instead leaves the item with the
+    // feed's own summary, which is what processFeed already does for any expansion error.
+    if (response.ok === false) {
+      await response.body?.cancel();
+      throw new Error(`article fetch returned HTTP ${response.status}`);
+    }
 
     // We are not going to save the HTML, we are going to convert it to markdown. We will take the encoding, decoding hit.
 
     const markDown = convertToMarkdown(
-      await readCappedText(newFeed, MAX_ARTICLE_BYTES),
+      await readCappedText(response, MAX_ARTICLE_BYTES),
     );
 
     const stringStream = new ReadableStream({
