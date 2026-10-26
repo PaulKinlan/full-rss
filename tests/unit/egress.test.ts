@@ -874,6 +874,10 @@ Deno.test("an authority that runs past the scan window is masked fail-closed", (
   const line = sanitizeForLog(
     "http://user:hunter2" + "a".repeat(MAX_LOG_SCAN) + "@evil.example/p",
   );
-  assertExcludes(line, "hunter2", "no password from an authority whose end was not seen");
+  assertExcludes(
+    line,
+    "hunter2",
+    "no password from an authority whose end was not seen",
+  );
   assertIncludes(line, "http://***@", "the visible authority is masked");
 });
