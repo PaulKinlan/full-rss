@@ -79,6 +79,13 @@ tree was formatted in one whitespace-only commit (11 of 13 files) before the
 format check joined, and lint went green first - so none of them is a red the
 reader learns to ignore.
 
+`deno.json` names **exact** dependency versions (`npm:cheerio@1.0.0`, not
+`npm:cheerio@^1.0.0`) and `deno check` runs with `--frozen-lockfile`
+(full-rss-w5z). Without the flag Deno's default is to _update_ `deno.lock` when
+the import map asks for something the lock does not hold — so a dependency
+change would resolve and rewrite the lock during the very check meant to catch
+it, and the tree a reviewer reads would not be the dependency set that ran.
+
 Unit suites live in `tests/unit/` and boundary (routing) suites in
 `tests/integration/` (`deno test --allow-env tests`). Nothing binds a port or
 opens KV at import time — `serve()` opens the KV handle and `main.ts` only calls

@@ -49,8 +49,40 @@ const XML_ESCAPES: Record<string, string> = {
 
 // One pass over the characters, so an entity that is already escaped is never escaped twice (the same
 // reason templates/index.ts spells its HTML escaper out rather than chaining replaces).
+//
+// Escaping is not sanitising: this makes a string safe to place between tags, it does not make it legal XML
+// (see stripXmlIllegal below, which runs once on the whole document).
 const escapeXml = (value: string): string =>
   value.replace(/[&<>"']/g, (char) => XML_ESCAPES[char] ?? char);
+
+/*
+  XML 1.0 cannot represent every character a JavaScript string can hold. Its Char production is
+  #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF], so the C0 controls other than tab,
+  newline and carriage return, the two BMP noncharacters U+FFFE/U+FFFF, and unpaired surrogates (which cannot
+  be encoded as UTF-8 at all) are all forbidden. A publisher's article that contains one - a form feed left
+  behind by a PDF scrape is the everyday case - makes this document NOT well-formed, and a reader rejects the
+  whole feed for it rather than skipping the one item that carried the character (full-rss-7kn).
+
+  The strip happens ONCE, on the rendered document, rather than in each escaper. escapeXml above covers only
+  the two elements this module writes itself (<author>, <category>); title, description, link, guid and
+  content:encoded all go through @feed/feed, so a per-field fix is only ever as complete as the list of fields
+  that happens to exist today. Running over the whole document is safe because it is assembled entirely from
+  strings written here, and every entity escapeXml emits is ASCII - no character it removes can be part of
+  one.
+
+  Removing rather than substituting is deliberate: the surrounding text is what the publisher sent, and a
+  replacement (a space, U+FFFD) would be text this service invented. Tab, newline and carriage return are
+  kept, since they are legal and are how pre-formatted article bodies are laid out.
+
+  The class IS the spec's complement, not a guessed set, and the surrogate arm relies on the `u` flag: in
+  Unicode mode a surrogate range matches only a LONE surrogate, because a valid astral character reaches the
+  regex as one code point (measured: "x\u{1F600}y" is unchanged by this replace).
+*/
+const XML_ILLEGAL =
+  // deno-lint-ignore no-control-regex -- naming the forbidden characters IS the point of this pattern
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDFFF]/gu;
+
+const stripXmlIllegal = (xml: string): string => xml.replace(XML_ILLEGAL, "");
 
 type ItemAuthor = { name?: string; email?: string };
 
@@ -260,7 +292,9 @@ export const exportFeed = (feed: Feed): string => {
     );
   }
 
-  return rssFeed.build();
+  // The single export boundary: whatever a reader receives has passed through here, so this is the one place
+  // the document's character set has to be legal XML 1.0 (stripXmlIllegal above).
+  return stripXmlIllegal(rssFeed.build());
 };
 
 /*
