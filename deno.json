@@ -1,12 +1,12 @@
 {
   "imports": {
-    "@feed/feed": "jsr:@feed/feed@^1.1.0",
-    "@mikaelporttila/rss": "jsr:@mikaelporttila/rss@^1.1.1",
-    "cheerio": "npm:cheerio@^1.0.0",
-    "marked": "npm:marked@^15.0.4",
-    "sanitize-html": "npm:sanitize-html@^2.14.0",
-    "turndown": "npm:turndown@^7.2.0",
-    "whatwg-flora-tmpl": "npm:whatwg-flora-tmpl@^1.0.3"
+    "@feed/feed": "jsr:@feed/feed@1.1.0",
+    "@mikaelporttila/rss": "jsr:@mikaelporttila/rss@1.1.1",
+    "cheerio": "npm:cheerio@1.0.0",
+    "marked": "npm:marked@15.0.4",
+    "sanitize-html": "npm:sanitize-html@2.14.0",
+    "turndown": "npm:turndown@7.2.0",
+    "whatwg-flora-tmpl": "npm:whatwg-flora-tmpl@1.0.3"
   },
   "deploy": {
     "org": "paulkinlan-ea",
