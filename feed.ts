@@ -1,5 +1,6 @@
 /*
-  feed.ts - the feed itself: `exportFeed` renders a parsed feed as the RSS 2.0 document a reader receives,
+  feed.ts - the feed itself: `exportFeed` renders a parsed feed as the RSS 2.0 document a reader receives
+  (at most MAX_ITEMS items, so an upstream's entry count cannot become unbounded export work - full-rss-l66),
   and `processFeed` fills in each item's full article content (up to MAX_ARTICLES) using content.ts.
 
   Parsing the incoming XML document is deliberately NOT here: that happens at the HTTP boundary in
@@ -213,10 +214,24 @@ export const exportFeed = (feed: Feed): string => {
     authors: parseAuthors(feed.author),
   });
 
+  /*
+    The export is where an upstream's entry count becomes this service's work: every entry that reaches the
+    body of this loop costs two sanitize-html passes and a place in the built document, so the loop is
+    bounded at MAX_ITEMS EMITTED items (full-rss-l66, the factory finding tm-unbounded-item-emission).
+    The bound counts emitted items, not entries scanned: an entry without a title is skipped before any of
+    that work and costs the loop nothing, so it does not spend the budget. 200 keeps every realistic feed
+    whole; a feed with tens of thousands of entries is truncated, as feed readers bound feeds themselves.
+  */
+  const MAX_ITEMS = 200;
+  let emitted = 0;
   for (const entry of feed.entries) {
+    if (emitted >= MAX_ITEMS) {
+      break;
+    }
     if (entry.title == null) {
       continue;
     }
+    emitted++;
 
     const content = sanitizeFeedHtml(entry.content?.value);
 

@@ -303,6 +303,80 @@ Deno.test("exportFeed emits no author or category element when an entry has neit
 });
 
 /*
+  The export loop is bounded at MAX_ITEMS (200) emitted items (full-rss-l66): a feed with tens of thousands
+  of entries may not turn into unbounded per-item sanitization and build work. The fixture is built, not
+  pasted: one titled item per line, the same shape the hand-written fixtures above use.
+*/
+const rssWithTitledItems = (n: number): string => {
+  const items = Array.from(
+    { length: n },
+    (_, i) =>
+      `    <item><title>Item ${i + 1}</title><link>https://example.com/${
+        i + 1
+      }</link><guid>https://example.com/${i + 1}</guid></item>`,
+  ).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Big</title>
+    <link>https://example.com/</link>
+${items}
+  </channel>
+</rss>`;
+};
+
+Deno.test("exportFeed truncates a feed to its first 200 items", async () => {
+  const xml = exportFeed(await parseFeed(rssWithTitledItems(205)));
+  assertEqual(
+    itemCount(xml),
+    200,
+    "the document holds exactly MAX_ITEMS items",
+  );
+  assertIncludes(
+    xml,
+    "<title>Item 200</title>",
+    "the last kept item is the 200th",
+  );
+  assertExcludes(
+    xml,
+    "<title>Item 201</title>",
+    "everything past the bound is cut",
+  );
+});
+
+Deno.test("exportFeed's item bound counts emitted items, not entries scanned", async () => {
+  // 210 untitled entries are skipped before any sanitize/build work, so they spend none of the budget:
+  // the 5 titled entries after them all still emit.
+  const untitled = Array.from(
+    { length: 210 },
+    (_, i) =>
+      `    <item><link>https://example.com/u${i}</link><guid>https://example.com/u${i}</guid></item>`,
+  ).join("\n");
+  const titled = Array.from(
+    { length: 5 },
+    (_, i) =>
+      `    <item><title>Item ${i + 1}</title><link>https://example.com/${
+        i + 1
+      }</link><guid>https://example.com/${i + 1}</guid></item>`,
+  ).join("\n");
+  const xml = exportFeed(
+    await parseFeed(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Mixed</title>
+    <link>https://example.com/</link>
+${untitled}\n${titled}
+  </channel>
+</rss>`),
+  );
+  assertEqual(
+    itemCount(xml),
+    5,
+    "all 5 titled items survive the untitled ones",
+  );
+});
+
+/*
   Feed expansion may not point back at the service doing the expanding (full-rss-qxz). A feed whose items link
   to this service's own endpoint turns one request into an unbounded tree of them, and none of the address
   checks catch it because the target is public - it is us.
