@@ -13,10 +13,18 @@
 set -u
 
 THIS_TREE="$(cd "$(dirname "$0")/.." && pwd)"
-OLD_TREE="/home/exedev/full-rss" # canonical checkout at origin/main (read-only use: run only)
+# The baseline tree is a THROWAWAY snapshot of origin/main in /tmp (full-rss-ryg): never the canonical
+# checkout ~/full-rss - no lane writes there, not even a temp file - and never a worktree (that would
+# write worktree metadata into the shared .git). git archive reads objects only.
+BASELINE=/tmp/full-rss-live-drive/baseline
 FEED_URL="https://cdn.jsdelivr.net/gh/PaulKinlan/full-rss@8f51a8c62a1b50dc9c08a09d5b714bae93f862fd/tests/fixtures/live-drive-feed.xml" # this repo's fixture at the pinned sha, via jsDelivr: byte-stable, 2 items, 1 expansion
 OUT=/tmp/full-rss-live-drive
 mkdir -p "$OUT"
+
+if [ ! -d "$BASELINE" ]; then
+  mkdir -p "$BASELINE"
+  git archive origin/main | tar -x -C "$BASELINE"
+fi
 
 # The self-expansion refusal needs the service to know its own origins (full-rss-7mo): unset, the
 # service fail-closes rather than guess its identity from the client-chosen Host header. Both trees
@@ -62,8 +70,8 @@ drive() { # tree outfile
   return 0
 }
 
-echo "== driving the PRE-refresh tree (origin/main) from $OLD_TREE"
-drive "$OLD_TREE" "$OUT/old-feed.xml" || exit 2
+echo "== driving the PRE-refresh baseline (origin/main snapshot) from $BASELINE"
+drive "$BASELINE" "$OUT/old-feed.xml" || exit 2
 echo "== driving the REFRESHED tree (this branch) from $THIS_TREE"
 drive "$THIS_TREE" "$OUT/new-feed.xml" || exit 2
 
