@@ -171,6 +171,96 @@ Deno.test("exportFeed sanitizes feed-supplied content:encoded and description", 
   assertExcludes(xml, "iframe");
 });
 
+/*
+  The characters XML 1.0 forbids (full-rss-7kn). Its Char production is
+  #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF], so the C0 controls other than tab,
+  newline and carriage return, U+FFFE/U+FFFF and unpaired surrogates cannot appear in a well-formed document -
+  and a reader rejects the WHOLE feed for one of them, not just the item that carried it. They arrive the
+  ordinary way: a scraped article that has a form feed in it, or a publisher that writes &#xD800;.
+
+  This is a property of the finished document, so it is asserted that way: nothing the pattern below matches
+  may survive anywhere in what exportFeed returns. escapeXml alone could not have covered it - it runs on
+  <author> and <category> only, while title, description, link, guid and content:encoded are written by
+  @feed/feed.
+*/
+const XML_1_0_FORBIDDEN =
+  // deno-lint-ignore no-control-regex -- the pattern's job is to name the forbidden characters
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDFFF]/u;
+
+const ATOM_WITH_LONE_SURROGATE = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Surrogates</title>
+  <id>urn:uuid:surrogates</id>
+  <updated>2025-10-06T10:00:00Z</updated>
+  <link href="https://example.com/"/>
+  <entry>
+    <title>X&#xD800;Y</title>
+    <id>urn:uuid:lone</id>
+    <updated>2025-10-06T11:00:00Z</updated>
+    <link href="https://example.com/lone"/>
+  </entry>
+  <entry>
+    <title>Smile \u{1F600}</title>
+    <id>urn:uuid:astral</id>
+    <updated>2025-10-06T12:00:00Z</updated>
+    <link href="https://example.com/astral"/>
+  </entry>
+</feed>`;
+
+const RSS_WITH_XML_ILLEGAL_CHARACTERS = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Chan\u0000nel\uFFFF</title>
+    <description>\u000BChannel\tdescription\uFFFE</description>
+    <link>https://example.com/a\u000Cb</link>
+    <item>
+      <title>Item\u0001title</title>
+      <link>https://example.com/c\u0002d</link>
+      <guid>https://example.com/e\u0003f</guid>
+      <description>Item\u0004description</description>
+      <content:encoded><![CDATA[<p>Item\u0005body</p>]]></content:encoded>
+      <author>ada\u0006@example.com</author>
+      <category>his\u0007tory</category>
+    </item>
+  </channel>
+</rss>`;
+
+Deno.test("exportFeed strips the characters XML 1.0 forbids from every field it emits", async () => {
+  const xml = exportFeed(await parseFeed(RSS_WITH_XML_ILLEGAL_CHARACTERS));
+
+  const survivors = [...xml].filter((char) => XML_1_0_FORBIDDEN.test(char));
+  assertEqual(survivors.length, 0, "forbidden characters left in the document");
+
+  // Stripped, not dropped: the rest of each field is still there, on the same item.
+  assertIncludes(xml, "<title>Channel</title>");
+  assertIncludes(xml, "<link>https://example.com/ab</link>");
+  assertIncludes(xml, "<title>Itemtitle</title>");
+  assertIncludes(xml, "<link>https://example.com/cd</link>");
+  assertIncludes(xml, "<guid>https://example.com/ef</guid>");
+  assertIncludes(xml, "<description>Itemdescription</description>");
+  assertIncludes(xml, "&lt;p&gt;Itembody&lt;/p&gt;");
+  assertIncludes(xml, "<author>ada@example.com</author>");
+  assertIncludes(xml, "<category>history</category>");
+  assertIncludes(xml, "</rss>");
+  // Tab, newline and carriage return are legal XML, and are how a pre-formatted body is laid out: kept.
+  assertIncludes(xml, "<description>Channel\tdescription</description>");
+  assert(itemCount(xml) === 1, `exactly one <item>, got ${itemCount(xml)}`);
+});
+
+Deno.test("exportFeed removes an unpaired surrogate and leaves a valid astral character alone", async () => {
+  // &#xD800; is a lone surrogate: it cannot be encoded as UTF-8, so it cannot be in the document either. A
+  // valid astral character (here an emoji) is ONE code point to a `u` regex, so the same surrogate range
+  // must not touch it - otherwise the strip would quietly delete every emoji in a feed.
+  const xml = exportFeed(await parseFeed(ATOM_WITH_LONE_SURROGATE));
+  assertIncludes(xml, "<title>XY</title>");
+  assertIncludes(xml, "<title>Smile \u{1F600}</title>");
+  assertEqual(
+    [...xml].filter((char) => XML_1_0_FORBIDDEN.test(char)).length,
+    0,
+    "forbidden characters left in the document",
+  );
+});
+
 Deno.test("exportFeed emits RSS 2.0 channel metadata from an RSS 2.0 feed", async () => {
   const xml = exportFeed(await parseFeed(RSS));
   assertIncludes(xml, '<rss version="2.0">');

@@ -185,6 +185,14 @@ not be seen.
   re-identifying every item of a feed that uses an unlisted one.
 - Item author and category values are XML-escaped when written into the output
   document; the `@feed/feed` builder escapes everything else it emits.
+- Escaping is not well-formedness, and both are required (full-rss-7kn). XML
+  1.0's `Char` production excludes the C0 controls other than tab/newline/CR,
+  U+FFFE/U+FFFF and unpaired surrogates, and a reader rejects the **whole**
+  document for one of them rather than skipping the item that carried it. So the
+  export boundary also strips every code point outside that production from the
+  finished document in a single pass — which is the only place that covers the
+  fields `@feed/feed` writes (`title`, `description`, `guid`, `content:encoded`)
+  as well as the two this repo writes itself.
 
 ## HTTP responses
 
