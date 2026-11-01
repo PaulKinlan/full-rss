@@ -167,6 +167,11 @@ not be seen.
   publisher HTML (scripts, event handlers, `javascript:` URLs, iframes) into a
   reader. Sanitization is idempotent under a fixed config, so expanded articles
   pass through unchanged.
+- The same boundary **bounds the document's item count** at `MAX_ITEMS` (200,
+  full-rss-l66): a feed with tens of thousands of entries may not turn unbounded
+  entry count into unbounded per-item sanitization and build work. The bound
+  counts **emitted** items — an entry with no title is skipped before any of
+  that work and spends none of the budget.
 - The same boundary decides which **links** a reader receives (full-rss-d2m).
   `<link>` (channel and item) is a navigation target, so only `http(s)` is
   re-emitted — anything else becomes an empty element, the shape an item with no
