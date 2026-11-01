@@ -14,7 +14,7 @@ set -u
 
 THIS_TREE="$(cd "$(dirname "$0")/.." && pwd)"
 OLD_TREE="/home/exedev/full-rss" # canonical checkout at origin/main (read-only use: run only)
-FEED_URL="https://paul.kinlan.me/tags/ai/index.xml" # 8 light static items, fast host: 10s feed cap + 8 short expansions fit the 30s whole-request budget under load
+FEED_URL="https://cdn.jsdelivr.net/gh/PaulKinlan/full-rss@8f51a8c62a1b50dc9c08a09d5b714bae93f862fd/tests/fixtures/live-drive-feed.xml" # this repo's fixture at the pinned sha, via jsDelivr: byte-stable, 2 items, 1 expansion
 OUT=/tmp/full-rss-live-drive
 mkdir -p "$OUT"
 
@@ -75,20 +75,31 @@ Deno.stdout.write(new Uint8Array(await res.arrayBuffer()));
 EOF
 (
   cd "$THIS_TREE"
-  deno run --allow-net live-drive-home.ts > "$OUT/new-home.html" 2>/dev/null
+  deno run --allow-net --allow-env live-drive-home.ts > "$OUT/new-home.html" 2> "$OUT/new-home.err"
 )
 rm -f "$THIS_TREE/live-drive-driver.ts" "$THIS_TREE/live-drive-home.ts"
+if [ ! -s "$OUT/new-home.html" ]; then
+  echo "FAIL: index page empty:"; tail -3 "$OUT/new-home.err"; exit 1
+fi
 
 echo "== evidence"
 old_items=$(grep -c '<item>' "$OUT/old-feed.xml" || true)
 new_items=$(grep -c '<item>' "$OUT/new-feed.xml" || true)
-old_enc=$(grep -c '<content:encoded' "$OUT/old-feed.xml" || true)
-new_enc=$(grep -c '<content:encoded' "$OUT/new-feed.xml" || true)
+# Expansion evidence = a content:encoded element that actually carries converted article text (the
+# builder emits the element for every item, empty when expansion never ran).
+old_enc=$(grep -cE '<content:encoded[^>]*>[^<]' "$OUT/old-feed.xml" || true)
+new_enc=$(grep -cE '<content:encoded[^>]*>[^<]' "$OUT/new-feed.xml" || true)
 echo "old: $old_items items, $old_enc expanded, $(wc -c < "$OUT/old-feed.xml") bytes"
 echo "new: $new_items items, $new_enc expanded, $(wc -c < "$OUT/new-feed.xml") bytes"
 echo "new index page: $(wc -c < "$OUT/new-home.html") bytes, title: $(grep -o '<title>[^<]*</title>' "$OUT/new-home.html" | head -1)"
 
-normalize() { sed -E 's#<lastBuildDate>[^<]*</lastBuildDate>#<lastBuildDate/>#g' "$1"; }
+# Known output deltas are normalized before the diff, each announced: lastBuildDate and the item
+# pubDate fallback are request-time (the fixture's items carry no dates); <language> and <generator>
+# are library defaults that @feed/feed 1.3.0 changed (en -> en-US, new generator string); the root
+# element's xmlns layout went multi-line with an added xmlns:media. Everything else must be identical.
+normalize() {
+  sed -z -E 's#<rss[^>]*>#<rss/>#g; s#<lastBuildDate>[^<]*</lastBuildDate>#<lastBuildDate/>#g; s#<pubDate>[^<]*</pubDate>#<pubDate/>#g; s#<language>[^<]*</language>#<language/>#g; s#<generator>[^<]*</generator>#<generator/>#g' "$1" | tr -d '\000'
+}
 if diff <(normalize "$OUT/old-feed.xml") <(normalize "$OUT/new-feed.xml") > "$OUT/feed.diff"; then
   echo "PARITY: served documents identical (modulo lastBuildDate)"
 else
@@ -98,7 +109,7 @@ else
 fi
 
 # Expansion actually happened on the refreshed tree (a real article fetch + conversion, not a passthrough).
-if [ "${new_enc:-0}" -gt 0 ] && [ "$(wc -c < "$OUT/new-feed.xml")" -gt 20000 ]; then
+if [ "${new_enc:-0}" -ge 1 ]; then
   echo "EXPANSION: content:encoded present on the refreshed tree"
 else
   echo "WARN: no expansion evidence on the refreshed tree (upstream may have had no expandable items)"
