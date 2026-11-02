@@ -132,23 +132,24 @@ pipes its `DecompressionStream` through the same 5 MB cap rather than calling
 ### `sanitizeForLog`
 
 Attacker-controlled URLs and error strings are stripped of control characters
-(forged log lines, ANSI), have userinfo masked, have query/fragment redacted,
-and are **bounded in length**: a log value is cut to `MAX_LOG_CHARS` (1024)
-characters and the cut is announced with a `...[truncated N chars]` marker
-(full-rss-d2m). A URL is the content of these lines, and a feed may link to a
-megabyte-long path, so without a bound a single item becomes a megabyte of log
-write per request. Truncation happens **last**, after the redactions, so the
-surviving prefix is already sanitized; the cut never splits a surrogate pair.
-Redacting a prefix first is not an option even though it looks cheaper: a
-userinfo whose `@` sits past the cut would be logged verbatim, which is why the
-redactions run over a **window** of `MAX_LOG_SCAN` (4096) characters instead and
-the cut is applied to their output (full-rss-al9). The window is the CPU bound -
-every pass is a single forward scan with no backtracking, so the cost of a log
-line is constant rather than growing with the value; the pattern this replaced
-backtracked from every start position and cost ~100 ms of CPU for one
-~920-character request line (full-rss-9ey). An authority that runs past the
-window is masked **fail-closed**: nothing is emitted from text whose end could
-not be seen.
+and of U+2028/U+2029 (line/paragraph separators that forge log entries for a
+consumer splitting on them - full-rss-2lr), have userinfo masked, have
+query/fragment redacted, and are **bounded in length**: a log value is cut to
+`MAX_LOG_CHARS` (1024) characters and the cut is announced with a
+`...[truncated N chars]` marker (full-rss-d2m). A URL is the content of these
+lines, and a feed may link to a megabyte-long path, so without a bound a single
+item becomes a megabyte of log write per request. Truncation happens **last**,
+after the redactions, so the surviving prefix is already sanitized; the cut
+never splits a surrogate pair. Redacting a prefix first is not an option even
+though it looks cheaper: a userinfo whose `@` sits past the cut would be logged
+verbatim, which is why the redactions run over a **window** of `MAX_LOG_SCAN`
+(4096) characters instead and the cut is applied to their output (full-rss-al9).
+The window is the CPU bound - every pass is a single forward scan with no
+backtracking, so the cost of a log line is constant rather than growing with the
+value; the pattern this replaced backtracked from every start position and cost
+~100 ms of CPU for one ~920-character request line (full-rss-9ey). An authority
+that runs past the window is masked **fail-closed**: nothing is emitted from
+text whose end could not be seen.
 
 ## Content pipeline
 
