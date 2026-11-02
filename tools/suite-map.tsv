@@ -42,6 +42,11 @@ tools/single-egress.test.sh	tools/single-egress.test.sh
 # (with stub commands) as well as the fast gate's selection. Editing the suite itself maps to itself.
 tools/full-gate.sh	tools/fast-gate.test.sh
 tools/fast-gate.test.sh	tools/fast-gate.test.sh
+# The live HTTP drive is a real-network verification tool (full-rss-vek): it fetches a fixture over
+# jsDelivr and expands real articles, so it can never run inside a gate. Its correctness is witnessed by
+# RUNNING it (bead evidence), not by a suite; the fixture it serves is data, not code.
+!tools/live-drive.sh	# real-network tool: correctness is witnessed by running it, not by a suite
+!tests/fixtures/**	# fixture data (served by tools/live-drive.sh over jsDelivr), not code any suite imports
 
 # --- a dependency change can invalidate any suite, so claim every suite -------------------------------
 deno.json	tests/unit/feed.test.ts tests/unit/content.test.ts tests/unit/index_template.test.ts tests/integration/server.test.ts tests/integration/main.test.ts

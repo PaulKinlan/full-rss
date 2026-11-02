@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fixture for tools/live-drive.sh (full-rss-vek): a small, byte-stable feed the live HTTP drive can
+  fetch from the public jsDelivr mirror of this repository (cdn.jsdelivr.net/gh/<owner>/<repo>@<sha>
+  <this path>), so the drive's upstream never depends on a third-party site's latency or item count.
+  Two items total: one carries a link to a small static page (the expansion evidence - a single
+  expansion fits the request budget even on a loaded machine), one has no link on purpose, so the
+  drive also exercises the skipped-expansion path.
+-->
+<rss version="2.0">
+  <channel>
+    <title>full-rss live-drive fixture</title>
+    <description>Two items for the deterministic live HTTP drive</description>
+    <link>https://paul.kinlan.me/</link>
+    <item>
+      <title>UA Tracer</title>
+      <link>https://paul.kinlan.me/ua-tracer/</link>
+      <guid>live-drive-1</guid>
+      <description>Expand this one.</description>
+    </item>
+    <item>
+      <title>No Link</title>
+      <guid>live-drive-2</guid>
+      <description>No link, so expansion skips this item and the summary survives.</description>
+    </item>
+  </channel>
+</rss>

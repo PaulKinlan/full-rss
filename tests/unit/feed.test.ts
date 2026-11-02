@@ -263,7 +263,10 @@ Deno.test("exportFeed removes an unpaired surrogate and leaves a valid astral ch
 
 Deno.test("exportFeed emits RSS 2.0 channel metadata from an RSS 2.0 feed", async () => {
   const xml = exportFeed(await parseFeed(RSS));
-  assertIncludes(xml, '<rss version="2.0">');
+  // The pin is the declaration a reader depends on - that this is an RSS 2.0 document - not the root
+  // element's attribute layout: @feed/feed 1.3.0 lays the xmlns declarations across lines (and adds
+  // xmlns:media), which is whitespace and attributes no reader parses (full-rss-vek).
+  assertIncludes(xml, '<rss version="2.0"');
   assertIncludes(xml, "<title>Example Feed</title>");
   assertIncludes(xml, "<description>An example feed</description>");
   assertIncludes(xml, "<link>https://example.com/</link>");
@@ -290,7 +293,8 @@ Deno.test("exportFeed skips an entry that has no title rather than emitting an e
 
 Deno.test("exportFeed converts an Atom feed into RSS 2.0", async () => {
   const xml = exportFeed(await parseFeed(ATOM));
-  assertIncludes(xml, '<rss version="2.0">');
+  // Same pin as above: the RSS 2.0 declaration, not the root element's attribute layout (full-rss-vek).
+  assertIncludes(xml, '<rss version="2.0"');
   assertIncludes(xml, "<title>Atom Example</title>");
   assertIncludes(xml, "<title>Atom Post</title>");
   assertIncludes(xml, "<link>https://example.com/atom-post</link>");
