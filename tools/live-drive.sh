@@ -10,7 +10,7 @@
 # with the process's own fetch, no stubs.
 #
 # Neither tree is written to: each gets a temp driver file, removed on exit; caches and KV go to DENO_DIR.
-set -u
+set -uo pipefail
 
 THIS_TREE="$(cd "$(dirname "$0")/.." && pwd)"
 # The baseline tree is a THROWAWAY snapshot of origin/main in /tmp (full-rss-ryg): never the canonical
@@ -29,7 +29,11 @@ trap 'rm -f "$THIS_TREE/live-drive-driver.ts" "$THIS_TREE/live-drive-home.ts"' I
 
 if [ ! -d "$BASELINE" ]; then
   mkdir -p "$BASELINE"
-  git archive origin/main | tar -x -C "$BASELINE"
+  # git -C THIS_TREE: the script is launched from the caller's cwd (a detached gate's is not the repo),
+  # and a failed archive into the pipe silently left an EMPTY baseline behind - the drive then died on
+  # a missing server.ts (full-rss-vek). archive reads objects only, so -C does not touch any tree.
+  git -C "$THIS_TREE" archive origin/main | tar -x -C "$BASELINE" \
+    || { echo "FAIL: the baseline snapshot failed"; exit 2; }
 fi
 
 # The self-expansion refusal needs the service to know its own origins (full-rss-7mo): unset, the
