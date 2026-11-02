@@ -126,10 +126,15 @@ else
   exit 1
 fi
 
-# Expansion actually happened on the refreshed tree (a real article fetch + conversion, not a passthrough).
-if [ "${new_enc:-0}" -ge 1 ]; then
-  echo "EXPANSION: content:encoded present on the refreshed tree"
+# Expansion actually happened on BOTH trees (a real article fetch + conversion, not a passthrough).
+# Zero expansions used to print a WARN and exit 0 - a false green (full-rss-vek, coord 2026-11-02):
+# parity of a passthrough document proves nothing about the parse -> egress -> sanitize -> convert ->
+# export path this drive exists to witness, so a drive without expansion evidence FAILS loudly and
+# the operator picks a fixture with an expandable item.
+if [ "${old_enc:-0}" -ge 1 ] && [ "${new_enc:-0}" -ge 1 ]; then
+  echo "EXPANSION: content:encoded present on both trees"
 else
-  echo "WARN: no expansion evidence on the refreshed tree (upstream may have had no expandable items)"
+  echo "FAIL: no real article expansion (old=${old_enc:-0}, new=${new_enc:-0}) - a passthrough-only parity witnesses nothing"
+  exit 1
 fi
 echo "DONE"
