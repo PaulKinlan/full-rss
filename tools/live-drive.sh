@@ -52,7 +52,7 @@ if [ "$(cat "$BASELINE/.snapshot-sha" 2>/dev/null)" != "$BASE_SHA" ]; then
   done
   printf '%s' "$BASE_SHA" > "$BASELINE/.snapshot-sha"
 fi
-echo "baseline: origin/main $(cut -c1-12 "$BASE_SHA") snapshotted at $BASELINE"
+echo "baseline: origin/main ${BASE_SHA:0:12} snapshotted at $BASELINE"  # substring, not `cut`: cut reads a FILE
 
 # The self-expansion refusal needs the service to know its own origins (full-rss-7mo): unset, the
 # service fail-closes rather than guess its identity from the client-chosen Host header. Both trees
