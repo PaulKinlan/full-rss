@@ -29,6 +29,13 @@ mkdir -p "$OUT"
 # real drive compared against a baseline with no deno.json in it (full-rss-ua2).
 BASELINE="$OUT/baseline"
 
+# One drive at a time per OUT (full-rss-ua2). Two runs share the same evidence filenames and the same
+# baseline snapshot, so overlapping them made one run read a half-written directory and report "index page
+# empty" while the other was still writing it - a false red, and a false green would be just as easy. flock
+# is released by the kernel when the holder dies, so a SIGKILL cannot leave a stale lock behind.
+exec 9>"$OUT/.lock" || { echo "FAIL: cannot open $OUT/.lock" >&2; exit 2; }
+flock -n 9 || { echo "FAIL: another live drive is already running against $OUT (lock $OUT/.lock)" >&2; exit 2; }
+
 # Cleanup is a trap, not the happy path: the EXIT handler covers the normal path, and INT/TERM EXIT via
 # `exit 143` rather than a bare handler - bash RESUMES after a trapped signal once the handler returns, so a
 # handler that only rm's lets a killed drive carry on into the next phase and write a fresh driver behind it.
