@@ -17,13 +17,17 @@
 set -uo pipefail
 
 THIS_TREE="$(cd "$(dirname "$0")/.." && pwd)"
-# The baseline tree is a THROWAWAY snapshot of origin/main in /tmp (full-rss-ryg): never the canonical
-# checkout ~/full-rss - no lane writes there, not even a temp file - and never a worktree (that would
-# write worktree metadata into the shared .git). git archive reads objects only.
-BASELINE=/tmp/full-rss-live-drive/baseline
 FEED_URL="https://cdn.jsdelivr.net/gh/PaulKinlan/full-rss@8f51a8c62a1b50dc9c08a09d5b714bae93f862fd/tests/fixtures/live-drive-feed.xml" # this repo's fixture at the pinned sha, via jsDelivr: byte-stable, 2 items, 1 expansion
 OUT=${FULL_RSS_LIVE_DRIVE_OUT:-/tmp/full-rss-live-drive}  # overridable so the drive can be exercised with a stub deno, no network
 mkdir -p "$OUT"
+# The baseline tree is a THROWAWAY snapshot of origin/main in /tmp (full-rss-ryg): never the canonical
+# checkout ~/full-rss - no lane writes there, not even a temp file - and never a worktree (that would
+# write worktree metadata into the shared .git). git archive reads objects only.
+# Under OUT, deliberately: the snapshot and the sha that vouches for it must live and die together. While
+# BASELINE was a fixed path and its marker was written under OUT, a stubbed run with its own OUT
+# re-snapshotted the shared directory from a throwaway repo, left the real marker in place, and the next
+# real drive compared against a baseline with no deno.json in it (full-rss-ua2).
+BASELINE="$OUT/baseline"
 
 # Cleanup is a trap, not the happy path: the EXIT handler covers the normal path, and INT/TERM EXIT via
 # `exit 143` rather than a bare handler - bash RESUMES after a trapped signal once the handler returns, so a
@@ -34,17 +38,21 @@ trap 'exit 143' INT TERM
 
 # `git -C THIS_TREE`: the script is launched from the caller's cwd, which a detached gate does not set to the
 # repo, and a failed archive into the pipe silently left an EMPTY baseline behind (full-rss-vek).
-# The archived sha is recorded and re-snapshotted when origin/main moves: a stale /tmp snapshot would
-# otherwise pass a parity check as "current origin/main" long after main had moved on (full-rss-ua2).
+# The sha is recorded INSIDE the snapshot and the snapshot is taken again when origin/main moves: a stale
+# /tmp tree would otherwise pass a parity check as "current origin/main" (full-rss-ua2).
 BASE_SHA=$(git -C "$THIS_TREE" rev-parse origin/main 2>/dev/null) \
   || { echo "FAIL: $THIS_TREE has no origin/main to snapshot from" >&2; exit 2; }
-if [ ! -d "$BASELINE" ] || [ "$(cat "$OUT/baseline-sha" 2>/dev/null)" != "$BASE_SHA" ]; then
+if [ "$(cat "$BASELINE/.snapshot-sha" 2>/dev/null)" != "$BASE_SHA" ]; then
   rm -rf "$BASELINE"; mkdir -p "$BASELINE"
   git -C "$THIS_TREE" archive origin/main | tar -x -C "$BASELINE" \
     || { echo "FAIL: the baseline snapshot failed"; exit 2; }
-  printf '%s' "$BASE_SHA" > "$OUT/baseline-sha"
+  # A snapshot that cannot drive is not a baseline: say so here, not 40 lines later as a missing import.
+  for f in server.ts deno.json deno.lock; do
+    [ -f "$BASELINE/$f" ] || { echo "FAIL: baseline snapshot of $BASE_SHA has no $f"; exit 2; }
+  done
+  printf '%s' "$BASE_SHA" > "$BASELINE/.snapshot-sha"
 fi
-echo "baseline: origin/main $(cut -c1-12 "$OUT/baseline-sha") snapshotted at $BASELINE"
+echo "baseline: origin/main $(cut -c1-12 "$BASE_SHA") snapshotted at $BASELINE"
 
 # The self-expansion refusal needs the service to know its own origins (full-rss-7mo): unset, the
 # service fail-closes rather than guess its identity from the client-chosen Host header. Both trees
