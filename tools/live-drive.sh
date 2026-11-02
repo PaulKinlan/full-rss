@@ -21,6 +21,12 @@ FEED_URL="https://cdn.jsdelivr.net/gh/PaulKinlan/full-rss@8f51a8c62a1b50dc9c08a0
 OUT=/tmp/full-rss-live-drive
 mkdir -p "$OUT"
 
+# Cleanup is a trap, not the happy path (full-rss-ryg): a bound that kills the drive mid-run (or any
+# crash) must not leave the driver scripts behind in the trees it used. Only THIS_TREE can hold one
+# after the baseline move - the baseline is /tmp and disposable either way - but the rm is cheap and
+# unconditional. INT/TERM run it too: bash does not run the EXIT handler on a signal by itself.
+trap 'rm -f "$THIS_TREE/live-drive-driver.ts" "$THIS_TREE/live-drive-home.ts"' INT TERM EXIT
+
 if [ ! -d "$BASELINE" ]; then
   mkdir -p "$BASELINE"
   git archive origin/main | tar -x -C "$BASELINE"
