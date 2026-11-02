@@ -132,7 +132,9 @@ pipes its `DecompressionStream` through the same 5 MB cap rather than calling
 ### `sanitizeForLog`
 
 Attacker-controlled URLs and error strings are stripped of control characters
-(forged log lines, ANSI), have userinfo masked, have query/fragment redacted,
+and of U+2028/U+2029 (line/paragraph separators that forge log entries for a
+consumer splitting on them - full-rss-2lr), have userinfo masked, have
+query/fragment redacted,
 and are **bounded in length**: a log value is cut to `MAX_LOG_CHARS` (1024)
 characters and the cut is announced with a `...[truncated N chars]` marker
 (full-rss-d2m). A URL is the content of these lines, and a feed may link to a

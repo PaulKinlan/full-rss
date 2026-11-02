@@ -737,7 +737,9 @@ const sliceChars = (value: string, limit: number): string => {
 
 /**
  * One line of attacker-controlled text, safe for a log: control characters (forged log lines, ANSI) are
- * stripped, userinfo is masked, URL queries/fragments are redacted, and the result is bounded in length.
+ * stripped, so are U+2028/U+2029 (LINE/PARAGRAPH SEPARATOR - a log consumer splitting on those would take the
+ * rest of the line for a new entry), userinfo is masked, URL queries/fragments are redacted, and the result
+ * is bounded in length.
  * Feed and article URLs can carry API keys even when the hostname is public, including inside exception
  * messages from upstream libraries.
  *
@@ -756,7 +758,9 @@ export const sanitizeForLog = (value: string): string => {
   const cleaned = redactQuery(
     maskUserinfo(
       // \p{Cc} is the control-character class (C0, DEL and C1) - the lint-quiet spelling of the same set.
-      scanned.replace(/[\p{Cc}]/gu, ""),
+      // U+2028/U+2029 sit outside it (categories Zl/Zp) yet forge log lines just as a CR does wherever a
+      // consumer splits on them, so they are named code points here (full-rss-2lr).
+      scanned.replace(/[\p{Cc}\u{2028}\u{2029}]/gu, ""),
       windowed,
     ),
   );

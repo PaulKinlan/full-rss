@@ -925,6 +925,13 @@ Deno.test("log lines lose control characters and userinfo, and keep the rest", (
     "CRLF stripped",
   );
   assertEqual(
+    sanitizeForLog(
+      "https://example.com/a\u{2028}EVIL: forged entry\u{2029}EVIL: forged article",
+    ),
+    "https://example.com/aEVIL: forged entryEVIL: forged article",
+    "U+2028/U+2029 stripped (full-rss-2lr): they are not \\p{Cc} but split log streams just as CR does",
+  );
+  assertEqual(
     sanitizeForLog("https://user:secret@example.com/feed"),
     "https://***@example.com/feed",
     "userinfo masked",
