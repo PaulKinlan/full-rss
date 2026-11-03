@@ -42,10 +42,16 @@ tools/single-egress.test.sh	tools/single-egress.test.sh
 # (with stub commands) as well as the fast gate's selection. Editing the suite itself maps to itself.
 tools/full-gate.sh	tools/fast-gate.test.sh
 tools/fast-gate.test.sh	tools/fast-gate.test.sh
-# The live HTTP drive is a real-network verification tool (full-rss-vek): it fetches a fixture over
-# jsDelivr and expands real articles, so it can never run inside a gate. Its correctness is witnessed by
-# RUNNING it (bead evidence), not by a suite; the fixture it serves is data, not code.
-!tools/live-drive.sh	# real-network tool: correctness is witnessed by running it, not by a suite
+# The live HTTP drive has a suite after all (full-rss-u48). It was exempted as "a real-network tool ...
+# witnessed by running it, not by a suite" (full-rss-vek), and that exemption cost SIX defects that
+# reviewers found by reading it: a driver written into the tree being driven, a baseline marker that could
+# disagree with its own snapshot, a run that exited 0 with no article expansion, `cut` reading a sha as a
+# filename, two runs interleaving one evidence directory, and `git archive` reading the caller's repo. Not
+# one of them needed the network - the drive shells out to `deno run`, so tools/live-drive.test.sh puts a
+# stub `deno` on PATH and runs the REAL script against a throwaway git tree, offline. Measured 2026-11-03:
+# 5.3s for the whole suite (21 assertions), and it is selected only when the tool or the suite changes.
+tools/live-drive.sh	tools/live-drive.test.sh
+tools/live-drive.test.sh	tools/live-drive.test.sh
 !tests/fixtures/**	# fixture data (served by tools/live-drive.sh over jsDelivr), not code any suite imports
 
 # --- a dependency change can invalidate any suite, so claim every suite -------------------------------
