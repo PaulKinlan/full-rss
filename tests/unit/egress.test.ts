@@ -53,7 +53,41 @@ async function withStubbedFetch(
 }
 
 const PUBLIC_A = ["93.184.216.34"];
+const PUBLIC_AAAA = ["2606:4700:10::ac42:93f3"];
 const resolver = (answers: string[]) => () => Promise.resolve(answers);
+
+/**
+ * Model a runtime WITH outbound networking and a chosen `Deno.resolveDns`, for the paths that only the
+ * DEFAULT resolver reaches (an explicit `resolveDns` option bypasses it entirely). Used by the tests that
+ * pin what a partial DNS failure does - nothing is fetched and no real lookup happens.
+ */
+async function withDefaultResolver(
+  resolveDns: (hostname: string, type: "A" | "AAAA") => Promise<string[]>,
+  body: () => Promise<void>,
+): Promise<void> {
+  const dns = Object.getOwnPropertyDescriptor(Deno, "resolveDns");
+  const permission = Object.getOwnPropertyDescriptor(
+    Deno.permissions,
+    "querySync",
+  );
+  Object.defineProperty(Deno, "resolveDns", {
+    configurable: true,
+    value: resolveDns,
+  });
+  Object.defineProperty(Deno.permissions, "querySync", {
+    configurable: true,
+    value: () => ({ state: "granted" }),
+  });
+  try {
+    await body();
+  } finally {
+    if (dns) Object.defineProperty(Deno, "resolveDns", dns);
+    else Reflect.deleteProperty(Deno, "resolveDns");
+    if (permission) {
+      Object.defineProperty(Deno.permissions, "querySync", permission);
+    } else Reflect.deleteProperty(Deno.permissions, "querySync");
+  }
+}
 
 // --- parseFetchableUrl: what may be fetched ------------------------------------------------------------
 
@@ -317,6 +351,98 @@ Deno.test("a failing or empty resolver blocks the name (fail closed)", async () 
       parseFetchableUrl("https://gone.example/", { resolveDns: resolver([]) }),
     "resolves nowhere",
     "an empty answer set",
+  );
+});
+
+Deno.test("a rejected A lookup refuses the URL instead of validating only the AAAA answers (full-rss-2h8)", async () => {
+  // The attack: make the A query fail (SERVFAIL, a timeout, a rate limit) and answer AAAA with something
+  // public. The old all-settled merge dropped the rejection, so the URL was accepted with no IPv4 answer
+  // ever checked, and getaddrinfo at fetch time could still return the private A record.
+  await withDefaultResolver(
+    (_hostname, type) =>
+      type === "A"
+        ? Promise.reject(new Error("proto error: SERVFAIL"))
+        : Promise.resolve(PUBLIC_AAAA),
+    async () => {
+      await assertRejects(
+        () => parseFetchableUrl("https://half-answers.example/feed"),
+        "A lookup failed",
+        "a rejected A query with a public AAAA answer",
+      );
+    },
+  );
+});
+
+Deno.test("a rejected AAAA lookup refuses the URL the same way", async () => {
+  await withDefaultResolver(
+    (_hostname, type) =>
+      type === "AAAA"
+        ? Promise.reject(new Error("proto error: timeout"))
+        : Promise.resolve(PUBLIC_A),
+    async () => {
+      await assertRejects(
+        () => parseFetchableUrl("https://half-answers.example/feed"),
+        "AAAA lookup failed",
+        "a rejected AAAA query with a public A answer",
+      );
+    },
+  );
+});
+
+Deno.test("a host with only one address family stays fetchable (NODATA is not a failure)", async () => {
+  // Deno reports "no records of that type" as a NotFound rejection, not an empty array (measured:
+  // ipv4.google.com has no AAAA, ipv6.google.com has no A). Failing closed on that would refuse every
+  // v4-only and v6-only host, so the distinction is the fix, not a tolerance.
+  const noRecords = () =>
+    Promise.reject(new Deno.errors.NotFound("proto error: no records found"));
+  await withDefaultResolver(
+    (_hostname, type) => type === "A" ? Promise.resolve(PUBLIC_A) : noRecords(),
+    async () => {
+      assertEqual(
+        (await parseFetchableUrl("https://v4-only.example/feed")).hostname,
+        "v4-only.example",
+        "an A-only host is still fetchable",
+      );
+    },
+  );
+  await withDefaultResolver(
+    (_hostname, type) =>
+      type === "AAAA" ? Promise.resolve(PUBLIC_AAAA) : noRecords(),
+    async () => {
+      assertEqual(
+        (await parseFetchableUrl("https://v6-only.example/feed")).hostname,
+        "v6-only.example",
+        "an AAAA-only host is still fetchable",
+      );
+    },
+  );
+  await withDefaultResolver(
+    () => noRecords(),
+    async () => {
+      await assertRejects(
+        () => parseFetchableUrl("https://no-addresses.example/feed"),
+        "resolves nowhere",
+        "a host with no records of either family",
+      );
+    },
+  );
+});
+
+Deno.test("a private answer in the surviving family still blocks", async () => {
+  // The merge is not the only guard: when one family is NODATA the other family's answers are classified
+  // exactly as before, so the 2h8 fix cannot be read as "A-only hosts skip the check".
+  await withDefaultResolver(
+    (_hostname, type) =>
+      type === "A" ? Promise.resolve(["10.0.0.5"]) : Promise.reject(
+        new Deno.errors.NotFound("proto error: no records found"),
+      ),
+    async () => {
+      await assertRejects(
+        () => parseFetchableUrl("https://v4-private.example/feed"),
+        "resolves to the private address",
+        "a private IPv4 answer on an A-only host",
+      );
+    },
   );
 });
 

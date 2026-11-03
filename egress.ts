@@ -208,16 +208,52 @@ const netPermissionGranted = (): boolean => {
   }
 };
 
+/**
+ * Deno reports "this name has no records of that type" as a `NotFound` REJECTION, not an empty array -
+ * measured on this VM: `ipv4.google.com` answers AAAA with NotFound and `ipv6.google.com` answers A with
+ * NotFound, and both are ordinary hosts. That is the NODATA case a v4-only or v6-only host produces, so it
+ * means "no answers of this family" and must not be read as a failed lookup. The name check is belt and
+ * braces for a runtime that re-wraps the error instead of preserving the class.
+ */
+const isNoRecords = (e: unknown): boolean =>
+  e instanceof Deno.errors.NotFound ||
+  (typeof e === "object" && e !== null &&
+    (e as { name?: unknown }).name === "NotFound");
+
+/**
+ * One settled lookup's answers. A rejection that is not NODATA is a lookup that DID NOT HAPPEN, and
+ * throwing here is the whole point of full-rss-2h8: merging only the fulfilled halves let an attacker keep
+ * a private IPv4 answer out of the check by making the A query fail (SERVFAIL, timeout, rate limit) while a
+ * public AAAA answer carried the URL through, and `getaddrinfo` at fetch time could still pick the private
+ * IPv4. THREAT_MODEL.md already states the rule - "a resolver error refuses the URL" - and this is where it
+ * was not being kept.
+ */
+const answersOf = (
+  result: PromiseSettledResult<string[]>,
+  hostname: string,
+  type: "A" | "AAAA",
+): string[] => {
+  if (result.status === "fulfilled") return result.value;
+  if (isNoRecords(result.reason)) return [];
+  throw new Error(
+    `${hostname} ${type} lookup failed (${
+      result.reason instanceof Error
+        ? result.reason.message
+        : String(result.reason)
+    })`,
+  );
+};
+
 const resolveForValidation: ResolveDns = async (hostname) => {
-  // Both record types, because a host may hold only one of them; an all-settled merge keeps an A-only host
-  // fetchable when the AAAA lookup answers "no records".
+  // Both record types, because a host may hold only one of them. "No records of this type" arrives as a
+  // rejection (see isNoRecords) and contributes nothing; any other rejection refuses the URL.
   const [a, aaaa] = await Promise.allSettled([
     Deno.resolveDns(hostname, "A"),
     Deno.resolveDns(hostname, "AAAA"),
   ]);
   return [
-    ...(a.status === "fulfilled" ? a.value : []),
-    ...(aaaa.status === "fulfilled" ? aaaa.value : []),
+    ...answersOf(a, hostname, "A"),
+    ...answersOf(aaaa, hostname, "AAAA"),
   ];
 };
 
