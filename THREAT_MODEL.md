@@ -261,16 +261,19 @@ Known limits that are accepted deliberately:
    entry cannot silently become a different host either: `parseSelfHosts`
    rejects a userinfo, path, query or fragment, so
    `https://service@attacker.example` fails the boot with an error instead of
-   configuring the attacker's host (full-rss-56w). An **alias hostname** for
-   this same service (a name that resolves to our addresses) is likewise not
-   detected, for the shared-CDN reason above: an address match cannot establish
-   that a distinct Host routes here (full-rss-og0). The literal spelling of our
-   own address IS refused, because that is a statement about the target's
-   spelling rather than about who else lives at that address. A depth counter is
-   **not** used, and should not be added: the loop crosses independent HTTP
-   requests, so any "depth" would have to arrive in the request — the same
-   client-controlled input that made the Host header unusable. Identity of the
-   service is the property that can be trusted.
+   configuring the attacker's host (full-rss-56w), and it rejects a non-http(s)
+   scheme (`file://host`, `data://host`), which parses to an opaque origin that
+   can never match a request and so would silence the guard while the config
+   looked set (full-rss-pm1). An **alias hostname** for this same service (a
+   name that resolves to our addresses) is likewise not detected, for the
+   shared-CDN reason above: an address match cannot establish that a distinct
+   Host routes here (full-rss-og0). The literal spelling of our own address IS
+   refused, because that is a statement about the target's spelling rather than
+   about who else lives at that address. A depth counter is **not** used, and
+   should not be added: the loop crosses independent HTTP requests, so any
+   "depth" would have to arrive in the request — the same client-controlled
+   input that made the Host header unusable. Identity of the service is the
+   property that can be trusted.
 
 ## Change discipline
 

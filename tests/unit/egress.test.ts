@@ -663,6 +663,12 @@ Deno.test("self hosts come from configuration, parsed strictly", () => {
       "https://service.test/some/path",
       "https://service.test/?x=1",
       "https://service.test#frag",
+      // A non-http(s) scheme parses cleanly and then yields the OPAQUE origin "null" (or, worse, a foreign
+      // scheme's origin), which can never match a request: the guard matched nothing while the config looked
+      // set, and the real public service stayed recursively expandable (full-rss-pm1).
+      "file://service.test",
+      "data://service.test",
+      "ftp://service.test",
     ]
   ) {
     let threw = false;

@@ -279,7 +279,13 @@ const isOwnHost = (url: URL, origin: string): boolean => {
  * happily discard the difference - `https://service.example@attacker.example` parses to the origin
  * `https://attacker.example`, so a typo'd or copy-pasted credential URL would make the guard trust the
  * ATTORNEY's host and refuse the real service, with no warning because a non-empty list parsed fine
- * (full-rss-56w).
+ * (full-rss-56w). The same rule refuses a non-http(s) scheme: the comparison below is by host, but the
+ * scheme decides whether an origin EXISTS to compare - a non-special scheme (`file:`, `data:`) parses
+ * cleanly and then yields the opaque origin `null`, which `new URL("null")` rejects, so every `isOwnHost`
+ * call caught and returned false and the guard matched nothing while the config looked set (full-rss-pm1:
+ * `FULL_RSS_SELF_HOSTS=file://self.example` left the real public service recursively expandable). This
+ * service answers http(s) only, so another scheme is the operator meaning something other than what would
+ * be compared, and it is refused rather than reinterpreted.
  */
 export const parseSelfHosts = (raw: string | undefined): string[] => {
   const origins: string[] = [];
@@ -293,6 +299,11 @@ export const parseSelfHosts = (raw: string | undefined): string[] => {
     } catch {
       throw new Error(
         `${entry} is not a host, host:port or origin to name this service by`,
+      );
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error(
+        `${entry} is not an http(s) origin to name this service by`,
       );
     }
     if (url.hostname === "") {
