@@ -103,6 +103,12 @@ the fetch, as does an empty answer set. Fail-closed everywhere:
   fetched unchecked;
 - a resolver error refuses the URL (the earlier fail-open behavior allowed
   unvalidated hostnames; that was closed deliberately);
+- a **partial** failure refuses it too: if the A or the AAAA lookup does not
+  complete, the URL is refused rather than validated on the surviving family
+  alone, because the fetch resolves again and may pick the address family that
+  was never checked (full-rss-2h8); "no records of that type" is not a failure —
+  it is how a v4-only or v6-only host answers — and contributes no answers
+  instead of refusing the URL;
 - without net permission the DNS layer is skipped, because the process cannot
   fetch anyway — this also keeps the offline unit suites network-free.
 
