@@ -381,6 +381,30 @@ Deno.test("a feed that cannot be fetched is a 500 with the warning page", async 
   );
 });
 
+Deno.test("a non-ok feed response's body is cancelled before the 500 is returned", async () => {
+  // tm-unreleased-upstream-body: an unconsumed body pins the upstream connection in the fetch pool
+  // until GC, so a run of failing upstreams holds sockets for responses nobody reads. The stub's
+  // stream cancel callback is the only observable of 'the body was released', so that is the assert.
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("gone"));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await withStubbedFetch(
+    () => new Response(body, { status: 404 }),
+    async () => {
+      const res = await get("?url=https://example.com/feed.xml");
+      assertEqual(res.status, 500, "the client still gets the warning page");
+      await res.text();
+    },
+  );
+  assert(cancelled, "the upstream body was cancelled, not left for GC");
+});
+
 Deno.test("feed URL and fetch-error logs redact query credentials", async () => {
   const log = console.log;
   const error = console.error;

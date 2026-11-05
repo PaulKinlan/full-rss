@@ -201,6 +201,11 @@ const handleFeedRequest = async (
       ...egressOptions,
     });
     if (!feedResponse.ok) {
+      // Release the upstream socket before answering (tm-unreleased-upstream-body): an unconsumed body
+      // pins the pooled connection until GC, and under load a run of 404/500 upstreams would hold sockets
+      // for responses nobody reads. The article path (content.ts) and the redirect hops (egress.ts) cancel
+      // for the same reason; this was the one return that did not.
+      await feedResponse.body?.cancel();
       return htmlResponse(
         "There was an error fetching the feed. Please check the URL",
         500,
