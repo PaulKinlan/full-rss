@@ -221,6 +221,21 @@ class RssWithItemMetadata extends Rss {
   }
 }
 
+/*
+  The single entry-selection predicate for both bounded loops below.
+
+  `exportFeed` may only emit an entry that has a title (an RSS item with no title is not a document a reader
+  can use, so untitled entries are dropped), and `processFeed` may only spend an article fetch on an entry
+  that can become an emitted item. Those two conditions are the same condition: when the loops disagree, a
+  feed of link-bearing but title-less entries burns the whole MAX_ARTICLES expansion budget - ten outbound
+  fetches, each one an article fetched and converted - on entries the export then drops, and the titled
+  entries that follow come back unexpanded (the factory finding tm-article-budget-vs-item-budget-mismatch).
+  Sharing the predicate is what keeps them from drifting apart again, so both loops call it rather than each
+  writing down its own test.
+*/
+const isEmittable = (entry: Feed["entries"][number]): boolean =>
+  entry.title != null;
+
 export const exportFeed = (feed: Feed): string => {
   // Let's just assume RSS.
 
@@ -260,7 +275,7 @@ export const exportFeed = (feed: Feed): string => {
     if (emitted >= MAX_ITEMS) {
       break;
     }
-    if (entry.title == null) {
+    if (!isEmittable(entry)) {
       continue;
     }
     emitted++;
@@ -313,7 +328,9 @@ export const processFeed = async (
       // only process the first 10 articles
       break;
     }
-    if (item.links == null || item.links.length === 0) {
+    // Same predicate as the export loop: an entry the export can never emit must not spend an article
+    // fetch from MAX_ARTICLES, or the budget is consumed by items the reader never receives.
+    if (!isEmittable(item) || item.links == null || item.links.length === 0) {
       continue;
     }
 
