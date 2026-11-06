@@ -535,3 +535,72 @@ Deno.test("processFeed refuses an item that links back at this service, and keep
     console.error = originalError;
   }
 });
+
+/*
+  The two bounded loops must select the same entries (full-rss-2t8, the factory finding
+  tm-article-budget-vs-item-budget-mismatch). `exportFeed` drops an entry without a title, so an untitled
+  entry can never become an emitted item - and `processFeed` must therefore not spend one of its ten article
+  fetches on it either. When the predicates disagreed, a feed that leads with link-bearing untitled entries
+  burned the whole expansion budget on entries the export then discarded, and the titled entries that
+  followed came back unexpanded, having cost ten outbound fetches and conversions for nothing.
+
+  What is observed here is which entries the expansion loop ATTEMPTED, because that attempt is the budget:
+  the gate runs with `--allow-env` only, exactly as tests/integration/server.test.ts documents, so every
+  attempt ends in the loop's error path (no KV handle without `--unstable-kv`, and no network permission),
+  and processFeed logs the URL it failed on. The assertion holds in either world - with KV and network an
+  attempt would succeed instead of logging - but the gate world is the one where nothing is spent.
+*/
+const RSS_LEADING_UNTITLED = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Untitled first</title>
+    <link>https://example.com/</link>
+${
+  Array.from(
+    { length: 12 },
+    (_, i) =>
+      `    <item><link>https://example.com/untitled-${i}</link><guid>u${i}</guid></item>`,
+  ).join("\n")
+}
+${
+  [1, 2, 3]
+    .map(
+      (n) =>
+        `    <item><title>Titled ${n}</title><link>https://example.com/titled-${n}</link><guid>t${n}</guid></item>`,
+    )
+    .join("\n")
+}
+  </channel>
+</rss>`;
+
+Deno.test("processFeed spends its expansion budget only on entries the export can emit", async () => {
+  const originalError = console.error;
+  const lines: string[] = [];
+  console.error = (...parts) => lines.push(parts.join(" "));
+  try {
+    await processFeed(await parseFeed(RSS_LEADING_UNTITLED));
+
+    const attempted = lines
+      .filter((line) => line.includes("Failed to fetch content for"))
+      .join("\n");
+
+    // The bug in one assertion: the twelve untitled entries in front must not consume any of the ten
+    // fetches, so the three titled entries behind them are all still expanded.
+    for (const n of [1, 2, 3]) {
+      assertIncludes(
+        attempted,
+        `https://example.com/titled-${n}`,
+        `titled entry ${n} still gets its expansion`,
+      );
+    }
+
+    // And the converse: no untitled entry was ever a fetch target, because the export would drop it.
+    assertExcludes(
+      attempted,
+      "https://example.com/untitled-",
+      "a title-less entry never spends an article fetch",
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
