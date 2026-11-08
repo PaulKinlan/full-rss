@@ -220,9 +220,9 @@ policy covers the non-document responses: the `405` method rejection is
 `text/plain` with the HTML policy's `nosniff`, `X-Frame-Options: DENY`,
 `referrer-policy: no-referrer` and CSP, because it is a fixed string this
 service emits rather than something a client can influence (`full-rss-cl4` — it
-was the one bare `Response` with no headers at all). A
-whole-request 30-second deadline bounds the full feed+articles pipeline and
-renders the retry page on expiry.
+was the one bare `Response` with no headers at all). A whole-request 30-second
+deadline bounds the full feed+articles pipeline and renders the retry page on
+expiry.
 
 ## Accepted residuals
 
