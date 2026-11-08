@@ -215,7 +215,12 @@ with `default-src 'none'` CSP (one inline style allowed), `nosniff`,
 no-referrer`. The feed itself is served as
 `application/rss+xml` with `default-src 'none'; frame-ancestors 'none'`,
 `nosniff`, `X-Frame-Options: DENY` and `referrer-policy: no-referrer`, so a
-browser that opens the feed directly cannot sniff or frame it either. A
+browser that opens the feed directly cannot sniff or frame it either. The same
+policy covers the non-document responses: the `405` method rejection is
+`text/plain` with the HTML policy's `nosniff`, `X-Frame-Options: DENY`,
+`referrer-policy: no-referrer` and CSP, because it is a fixed string this
+service emits rather than something a client can influence (`full-rss-cl4` — it
+was the one bare `Response` with no headers at all). A
 whole-request 30-second deadline bounds the full feed+articles pipeline and
 renders the retry page on expiry.
 

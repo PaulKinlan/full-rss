@@ -123,6 +123,9 @@ const selfAddressesFor = async (
 
 // Every rendered page (including errors and the deadline retry page) uses the same policy. The index has
 // one inline style and no scripts; allow that style without allowing any script or external resource.
+//
+// This is the policy, not a page's policy: every response this service writes carries it, and only the
+// content type changes with the body (see textResponse below).
 const HTML_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "content-security-policy":
@@ -149,12 +152,26 @@ const htmlResponse = async (
 ): Promise<Response> =>
   new Response(await index(message), { status, headers: HTML_HEADERS });
 
+/*
+  The one response whose body is not a document: a rejection is one line of plain text, so it says so in its
+  content type instead of pretending to be HTML - but it still leaves this origin, so it carries the same
+  hardened policy every other response carries (full-rss-cl4). It used to be a bare
+  `new Response("Method not allowed", { status: 405 })`: the only response a browser could sniff into another
+  type or frame, and the factory finding tm-response-header-invariant-bypass is exactly that gap between the
+  header sets a page and a feed got and the one nothing gave.
+*/
+const textResponse = (message: string, status: number): Response =>
+  new Response(message, {
+    status,
+    headers: { ...HTML_HEADERS, "content-type": "text/plain; charset=utf-8" },
+  });
+
 const handleFeedRequest = async (
   req: Request,
   signal: AbortSignal,
 ): Promise<Response> => {
   if (req.method !== "GET") {
-    return new Response("Method not allowed", { status: 405 });
+    return textResponse("Method not allowed", 405);
   }
 
   const { searchParams } = new URL(req.url);

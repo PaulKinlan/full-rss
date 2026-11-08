@@ -58,17 +58,10 @@ async function withStubbedFetch(
 const get = (query = ""): Promise<Response> =>
   handleRequest(new Request(`http://localhost/${query}`));
 
-const assertHtmlHeaders = (res: Response): void => {
-  assertEqual(
-    res.headers.get("content-type"),
-    "text/html; charset=utf-8",
-    "HTML content type",
-  );
-  assertEqual(
-    res.headers.get("content-security-policy"),
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-    "restrictive CSP with working local form and inline style",
-  );
+// The part of the policy every response carries, whatever the body is: a page, the feed, or the plain-text
+// method rejection (full-rss-cl4). Asserted separately from the content type so each response can say what
+// its own body is without restating the invariant.
+const assertHardenedHeaders = (res: Response): void => {
   assertEqual(
     res.headers.get("x-content-type-options"),
     "nosniff",
@@ -82,12 +75,39 @@ const assertHtmlHeaders = (res: Response): void => {
   );
 };
 
+const assertHtmlHeaders = (res: Response): void => {
+  assertEqual(
+    res.headers.get("content-type"),
+    "text/html; charset=utf-8",
+    "HTML content type",
+  );
+  assertEqual(
+    res.headers.get("content-security-policy"),
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "restrictive CSP with working local form and inline style",
+  );
+  assertHardenedHeaders(res);
+};
+
 Deno.test("a non-GET request is refused with 405", async () => {
   const res = await handleRequest(
     new Request("http://localhost/", { method: "POST" }),
   );
   assertEqual(res.status, 405, "status");
   assertEqual(await res.text(), "Method not allowed", "body");
+  // The rejection is a line of text, not a page, so it names its own content type - and, because it still
+  // leaves this origin, it carries the same hardened policy as every other response (full-rss-cl4).
+  assertEqual(
+    res.headers.get("content-type"),
+    "text/plain; charset=utf-8",
+    "plain-text content type",
+  );
+  assertIncludes(
+    res.headers.get("content-security-policy") ?? "",
+    "default-src 'none'",
+    "the rejection carries the CSP too",
+  );
+  assertHardenedHeaders(res);
 });
 
 Deno.test("no url renders the index page", async () => {
