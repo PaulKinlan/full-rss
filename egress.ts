@@ -756,10 +756,37 @@ const isSchemeChar = (code: number): boolean =>
 const isAuthoritySlash = (code: number): boolean => code === 47 || code === 92;
 
 /**
+ * The six WHATWG special schemes (lowercase, compared ASCII case-insensitively - `value.charCodeAt(c) | 0x20`
+ * lowercases a letter and leaves every other scheme character unchanged). Only these parse an authority out
+ * of the text directly after their colon, with no slash at all: `http:user:pass@host/x` is a validation
+ * error that still yields username `user`, password `secret`, host `evil.example` (full-rss-xv3). A
+ * non-special scheme needs the `//` - `term:Monday@noon` has a path, and no userinfo, without it.
+ */
+const SPECIAL_SCHEMES = ["http", "https", "ws", "wss", "ftp", "file"];
+
+const isSpecialScheme = (value: string, from: number, to: number): boolean => {
+  for (const scheme of SPECIAL_SCHEMES) {
+    if (to - from !== scheme.length) continue;
+    let same = true;
+    for (let at = from; at < to; at++) {
+      if ((value.charCodeAt(at) | 0x20) !== scheme.charCodeAt(at - from)) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return true;
+  }
+  return false;
+};
+
+/**
  * Where the next authority of `value` begins: just past a slash run that either follows a scheme token and
- * its colon, or stands scheme-relative. WHATWG gives a special scheme's authority to ANY run of `/` and
- * `\\` after the colon - `http:\\user:pass@host/x` and even `http:/u@host` parse with that authority - and
- * a scheme-relative reference (`//user:pass@host/x`) carries userinfo with no scheme at all (full-rss-1xy).
+ * its colon, or stands scheme-relative - or, for a special scheme and no slash at all, right after the
+ * colon. WHATWG gives a special scheme's authority to ANY run of `/` and `\\` after the colon -
+ * `http:\\user:pass@host/x` and even `http:/u@host` parse with that authority - and those six schemes fall
+ * into the authority state on any character, so `http:user:pass@host/x` carries that userinfo too
+ * (full-rss-xv3); a non-special scheme needs the `//`, so `term:Monday@noon` never anchors. A scheme-
+ * relative reference (`//user:pass@host/x`) carries userinfo with no scheme at all (full-rss-1xy).
  * A standalone run needs two or more slashes and must not follow `/`, `\\` or `:`, so the `//` of `scheme://`
  * (found through its colon a moment earlier) and the doubled slashes a path can start with do not turn an
  * `@` that a URL parser would call path into userinfo here. The scheme token must start with a letter, so
@@ -783,7 +810,15 @@ const nextAuthorityStart = (value: string, from: number): number => {
         while (run < value.length && isAuthoritySlash(value.charCodeAt(run))) {
           run++;
         }
-        if (run > i + 1) return run;
+        // Zero slashes anchor only for a special scheme: WHATWG's parser reaches the authority state from
+        // those six no matter what follows the colon, while any other scheme reads the text as a path
+        // (full-rss-xv3). The check runs only on this path, so the common `://` shape pays nothing.
+        if (
+          run > i + 1 ||
+          (run === i + 1 && isSpecialScheme(value, tokenAt, i))
+        ) {
+          return run;
+        }
       }
       i++;
     } else if (isAuthoritySlash(code)) {
@@ -828,7 +863,8 @@ const nextAuthorityStart = (value: string, from: number): number => {
  *
  * The authority is anchored on WHATWG's spellings, not just `://` (full-rss-1xy): a special scheme reads any
  * run of `/` and `\\` after its colon as the delimiter (`http:\\user:pass@host/x` parses with that userinfo,
- * so does `http:/u@host`), and a scheme-relative reference (`//user:pass@host/x`) carries userinfo with no
+ * so does `http:/u@host`), and with no slash at all for those six schemes (`http:u@host`, full-rss-xv3),
+ * while a scheme-relative reference (`//user:pass@host/x`) carries userinfo with no
  * scheme at all. `nextAuthorityStart` finds each of those; everything after the anchor works as before.
  */
 const maskUserinfo = (value: string, windowed: boolean): string => {

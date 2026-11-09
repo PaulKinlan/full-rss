@@ -1198,7 +1198,23 @@ Deno.test("an '@' in the path is not userinfo and is left alone", () => {
 Deno.test("userinfo is masked in WHATWG's other authority spellings, not just '://'", () => {
   // Regression (full-rss-1xy): the anchor was a literal '://', so credentials behind the other spellings a
   // WHATWG parser accepts reached logs verbatim. A special scheme reads ANY run of '/' and '\' after its
-  // colon as the authority delimiter, and a scheme-relative reference carries userinfo with no scheme.
+  // colon as the authority delimiter - or none at all (full-rss-xv3) - and a scheme-relative reference
+  // carries userinfo with no scheme.
+  assertEqual(
+    sanitizeForLog("http:user:secret@evil.example/x"),
+    "http:***@evil.example/x",
+    "a special scheme needs no slash: the colon alone opens the authority",
+  );
+  assertEqual(
+    sanitizeForLog("ws:user:secret@evil.example/x"),
+    "ws:***@evil.example/x",
+    "every special scheme, not only http",
+  );
+  assertEqual(
+    sanitizeForLog("HTTP:USER:SECRET@EVIL.EXAMPLE/X"),
+    "HTTP:***@EVIL.EXAMPLE/X",
+    "schemes are ASCII case-insensitive",
+  );
   assertEqual(
     sanitizeForLog("http:\\user:secret@evil.example/x"),
     "http:\\***@evil.example/x",
@@ -1238,6 +1254,16 @@ Deno.test("colon-and-slash text that is not an authority is left alone", () => {
     sanitizeForLog("scanning C:\\Users\\name\\notes"),
     "scanning C:\\Users\\name\\notes",
     "a Windows path without an '@' is untouched",
+  );
+  assertEqual(
+    sanitizeForLog("http: rejected user@host"),
+    "http: rejected user@host",
+    "a special-scheme colon before prose is not an authority: the space ends it before any '@'",
+  );
+  assertEqual(
+    sanitizeForLog("term:Monday@noon"),
+    "term:Monday@noon",
+    "a non-special scheme has no authority without '//'",
   );
 });
 
