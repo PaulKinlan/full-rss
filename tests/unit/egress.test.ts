@@ -1195,6 +1195,63 @@ Deno.test("an '@' in the path is not userinfo and is left alone", () => {
   );
 });
 
+Deno.test("userinfo is masked in WHATWG's other authority spellings, not just '://'", () => {
+  // Regression (full-rss-1xy): the anchor was a literal '://', so credentials behind the other spellings a
+  // WHATWG parser accepts reached logs verbatim. A special scheme reads ANY run of '/' and '\' after its
+  // colon as the authority delimiter, and a scheme-relative reference carries userinfo with no scheme.
+  assertEqual(
+    sanitizeForLog("http:\\user:secret@evil.example/x"),
+    "http:\\***@evil.example/x",
+    "a backslash after the scheme opens the authority too",
+  );
+  assertEqual(
+    sanitizeForLog("http:\\\\user:secret@evil.example/x"),
+    "http:\\\\***@evil.example/x",
+    "doubled backslashes, which a WHATWG parser normalises the same way",
+  );
+  assertEqual(
+    sanitizeForLog("http:/user:secret@evil.example/x"),
+    "http:/***@evil.example/x",
+    "a single slash after a special scheme still parses to an authority",
+  );
+  assertEqual(
+    sanitizeForLog("//user:secret@evil.example/x"),
+    "//***@evil.example/x",
+    "scheme-relative reference",
+  );
+  assertEqual(
+    sanitizeForLog("Invalid URL //user:secret@evil.example given"),
+    "Invalid URL //***@evil.example given",
+    "scheme-relative reference inside an error message",
+  );
+});
+
+Deno.test("colon-and-slash text that is not an authority is left alone", () => {
+  // The anchor needs a scheme token (WHATWG's grammar: a letter, then letters/digits/+/-/.), so timestamps
+  // and ratios never mask, and a Windows path without an '@' has nothing to mask.
+  assertEqual(
+    sanitizeForLog("retried 10:30/45 at 2026-11-09T04:01:22"),
+    "retried 10:30/45 at 2026-11-09T04:01:22",
+    "timestamps and ratios are not an authority",
+  );
+  assertEqual(
+    sanitizeForLog("scanning C:\\Users\\name\\notes"),
+    "scanning C:\\Users\\name\\notes",
+    "a Windows path without an '@' is untouched",
+  );
+});
+
+Deno.test("a doubled slash inside a path masks liberally rather than leaking", () => {
+  // The scheme-relative anchor cannot tell a path's '//' from a reference's '//' without parsing, and
+  // masking one thing too many is the safe direction (the maskUserinfo docblock): a path '//b@cdn' is
+  // masked even though a URL parser would call it path.
+  assertEqual(
+    sanitizeForLog("https://example.com/a//b@cdn/x"),
+    "https://example.com/a//***@cdn/x",
+    "a path '@' after a '//' is over-masked, never logged",
+  );
+});
+
 Deno.test("an authority that runs past the scan window is masked fail-closed", () => {
   // MAX_LOG_SCAN bounds the work (full-rss-9ey), so on a value longer than the window the '@' that ends a
   // userinfo can sit outside anything this function looks at. Masking the whole visible authority is the

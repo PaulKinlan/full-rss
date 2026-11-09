@@ -741,8 +741,73 @@ export const MAX_LOG_SCAN = 4 * MAX_LOG_CHARS;
 const endsAuthority = (value: string, index: number): boolean =>
   value[index] === "/" || value.charCodeAt(index) <= 0x20;
 
+/** A scheme token starts with a letter: WHATWG's scheme grammar is `[a-zA-Z][a-zA-Z0-9+.-]*`. */
+const isSchemeStart = (code: number): boolean =>
+  (code >= 97 && code <= 122) || (code >= 65 && code <= 90);
+
+const isSchemeChar = (code: number): boolean =>
+  isSchemeStart(code) ||
+  (code >= 48 && code <= 57) ||
+  code === 43 ||
+  code === 45 ||
+  code === 46;
+
+/** '/' and '\\': each can follow a scheme's colon and open an authority, alone or in a mixed run. */
+const isAuthoritySlash = (code: number): boolean => code === 47 || code === 92;
+
 /**
- * Mask the userinfo of every absolute URL in `value` (`user:password@host` becomes `***@host`).
+ * Where the next authority of `value` begins: just past a slash run that either follows a scheme token and
+ * its colon, or stands scheme-relative. WHATWG gives a special scheme's authority to ANY run of `/` and
+ * `\\` after the colon - `http:\\user:pass@host/x` and even `http:/u@host` parse with that authority - and
+ * a scheme-relative reference (`//user:pass@host/x`) carries userinfo with no scheme at all (full-rss-1xy).
+ * A standalone run needs two or more slashes and must not follow `/`, `\\` or `:`, so the `//` of `scheme://`
+ * (found through its colon a moment earlier) and the doubled slashes a path can start with do not turn an
+ * `@` that a URL parser would call path into userinfo here. The scheme token must start with a letter, so
+ * timestamps and ratios (`10:30/45`, `2026-11-09T04:01:22`) never anchor one.
+ *
+ * Linear and forward-only like the scan it serves (full-rss-9ey): `i` only moves forward, and the backward
+ * walk over a scheme token visits each character at most once - a token ends at the first character outside
+ * the scheme set, and a colon can end only the one token before it.
+ */
+const nextAuthorityStart = (value: string, from: number): number => {
+  let i = from;
+  while (i < value.length) {
+    const code = value.charCodeAt(i);
+    if (code === 58 /* ':' */) {
+      let tokenAt = i;
+      while (tokenAt > 0 && isSchemeChar(value.charCodeAt(tokenAt - 1))) {
+        tokenAt--;
+      }
+      if (tokenAt < i && isSchemeStart(value.charCodeAt(tokenAt))) {
+        let run = i + 1;
+        while (run < value.length && isAuthoritySlash(value.charCodeAt(run))) {
+          run++;
+        }
+        if (run > i + 1) return run;
+      }
+      i++;
+    } else if (isAuthoritySlash(code)) {
+      const before = i > 0 ? value.charCodeAt(i - 1) : 0;
+      if (before !== 47 && before !== 92 && before !== 58) {
+        let run = i;
+        while (run < value.length && isAuthoritySlash(value.charCodeAt(run))) {
+          run++;
+        }
+        if (run - i >= 2) return run;
+        i = run;
+      } else {
+        i++;
+      }
+    } else {
+      i++;
+    }
+  }
+  return -1;
+};
+
+/**
+ * Mask the userinfo of every absolute or scheme-relative URL in `value` (`user:password@host` becomes
+ * `***@host`).
  *
  * One forward scan, and deliberately not a regular expression. The pattern that used to do this
  * (`([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@`) has to find a literal '@' to match at all, so on a value
@@ -760,18 +825,22 @@ const endsAuthority = (value: string, index: number): boolean =>
  * `windowed` says the caller already cut the value at MAX_LOG_SCAN, so an authority that runs to the end of
  * the value may be missing the '@' that terminates it. That case fails CLOSED: the whole visible authority
  * is masked, because the alternative is emitting a password prefix we could not see the end of.
+ *
+ * The authority is anchored on WHATWG's spellings, not just `://` (full-rss-1xy): a special scheme reads any
+ * run of `/` and `\\` after its colon as the delimiter (`http:\\user:pass@host/x` parses with that userinfo,
+ * so does `http:/u@host`), and a scheme-relative reference (`//user:pass@host/x`) carries userinfo with no
+ * scheme at all. `nextAuthorityStart` finds each of those; everything after the anchor works as before.
  */
 const maskUserinfo = (value: string, windowed: boolean): string => {
-  // `copyFrom` is how much of the value is already in `masked`; `searchFrom` is where the next "://" search
-  // starts. They differ whenever an authority is scanned and found clean: the scan moves past it, the copy
+  // `copyFrom` is how much of the value is already in `masked`; `searchFrom` is where the next authority
+  // search starts. They differ whenever an authority is scanned and found clean: the scan moves past it, the copy
   // does not. Both only ever move forward.
   let masked = "";
   let copyFrom = 0;
   let searchFrom = 0;
   for (;;) {
-    const schemeAt = value.indexOf("://", searchFrom);
-    if (schemeAt < 0) break;
-    const authorityStart = schemeAt + 3;
+    const authorityStart = nextAuthorityStart(value, searchFrom);
+    if (authorityStart < 0) break;
     let authorityEnd = authorityStart;
     while (authorityEnd < value.length && !endsAuthority(value, authorityEnd)) {
       authorityEnd++;
