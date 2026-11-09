@@ -84,13 +84,17 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   DNS host while `new URL()` preserves the dot — comparing the raw `host` let
   one appended character through (full-rss-pbz). Addresses are compared **by
   value**, so the same service spelled as its own IP literal is refused too
-  (full-rss-647). A target's resolved ADDRESSES are deliberately not compared
-  against ours: behind a shared CDN or reverse proxy (Cloudflare, a Deno Deploy
-  edge, Vercel) thousands of unrelated sites share our address, so that
-  comparison refused every ordinary feed on the same front - a worse failure
-  than the hole it closed (full-rss-og0). An alias hostname pointing at this
-  service is therefore not detected, and is recorded as a residual. The guard
-  also covers the requester's `?url=` and every redirect hop, because
+  (full-rss-647). So is any IP literal when our own addresses could not be
+  determined, because an unknown identity cannot rule that literal out — the
+  guard fails **closed** rather than quietly checking one spelling less
+  (`full-rss-pxq`; the lookup is retried, and the service logs the degraded mode
+  once per retry window). A target's resolved ADDRESSES are deliberately not
+  compared against ours: behind a shared CDN or reverse proxy (Cloudflare, a
+  Deno Deploy edge, Vercel) thousands of unrelated sites share our address, so
+  that comparison refused every ordinary feed on the same front - a worse
+  failure than the hole it closed (full-rss-og0). An alias hostname pointing at
+  this service is therefore not detected, and is recorded as a residual. The
+  guard also covers the requester's `?url=` and every redirect hop, because
   `guardedFetch` re-runs this function per hop.
 
 ### DNS validation
@@ -266,11 +270,13 @@ Known limits that are accepted deliberately:
    per-request 30-second deadline and the 10-article cap remain the bound. Two
    related residuals, both deliberate: if `FULL_RSS_SELF_HOSTS` is unset the
    service falls back to the request's own origin, which the client chooses, and
-   logs that once; and if this service's own addresses cannot be resolved only
-   the host (and literal-address) comparison applies. Neither is silent in the
-   code, and both are worse than configuration, not equal to it. A misconfigured
-   entry cannot silently become a different host either: `parseSelfHosts`
-   rejects a userinfo, path, query or fragment, so
+   logs that once; and if this service's own addresses cannot be resolved the
+   host comparison still applies and any IP-literal target is **refused** until
+   the lookup succeeds - the literal comparison is the one that cannot be made,
+   so instead of skipping it the guard fails closed (`full-rss-pxq`). Neither is
+   silent in the code, and both are worse than configuration, not equal to it. A
+   misconfigured entry cannot silently become a different host either:
+   `parseSelfHosts` rejects a userinfo, path, query or fragment, so
    `https://service@attacker.example` fails the boot with an error instead of
    configuring the attacker's host (full-rss-56w), and it rejects a non-http(s)
    scheme (`file://host`, `data://host`), which parses to an opaque origin that

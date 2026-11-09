@@ -269,7 +269,17 @@ export type FetchUrlOptions = {
   resolveDns?: ResolveDns;
   signal?: AbortSignal;
   selfOrigins?: readonly string[];
-  selfAddresses?: readonly string[];
+  /**
+   * The addresses `selfOrigins` resolve to, so that this service spelled as its own IP literal is refused too
+   * (full-rss-647). Three states, and the difference between them is deliberate:
+   *
+   *   - an array: this deployment's own addresses, compared by value;
+   *   - `null`: this deployment has addresses but they could not be determined right now, so an IP-literal
+   *     target cannot be ruled out as this service and is refused - fail closed (full-rss-pxq);
+   *   - omitted: the caller is not supplying self-identity at all (a bare utility call), so no literal
+   *     comparison happens. server.ts always passes one of the first two.
+   */
+  selfAddresses?: readonly string[] | null;
 };
 
 /**
@@ -376,7 +386,7 @@ const addressKey = (raw: string): string | null => {
 
 /** The addresses this service answers on, as comparable keys. Empty when none are configured. */
 const ownAddressKeys = (
-  addresses: readonly string[] | undefined,
+  addresses: readonly string[] | null | undefined,
 ): Set<string> => {
   const keys = new Set<string>();
   for (const address of addresses ?? []) {
@@ -384,6 +394,29 @@ const ownAddressKeys = (
     if (key != null) keys.add(key);
   }
   return keys;
+};
+
+/**
+ * An IP literal that passed the address policy may still be this service itself, spelled by address instead of
+ * by name - the one spelling the host comparison cannot see (full-rss-647), and the spelling the guard used to
+ * stop checking as soon as the lookup of our own addresses came back empty (full-rss-pxq, the factory finding
+ * tm-self-address-guard-silently-absent). `selfAddresses` is null exactly when this deployment has addresses it
+ * could not learn, and then an unknown identity cannot rule the literal out, so it is refused: failing closed
+ * costs an IP-literal feed for as long as the lookup is down, and the other way round costs the bound on the
+ * whole product.
+ *
+ * A HOSTNAME is never judged this way - only its literal spelling is, because behind a shared CDN an address
+ * match proves nothing about who routes to it (full-rss-og0).
+ */
+const refuseUnverifiableSelfLiteral = (
+  url: URL,
+  options?: FetchUrlOptions,
+): void => {
+  if (options?.selfAddresses === null) {
+    throw new BlockedUrlError(
+      `${url.host} is an IP literal and this deployment's own addresses could not be resolved, so it cannot be ruled out as this service itself`,
+    );
+  }
 };
 
 /**
@@ -477,11 +510,9 @@ export const parseFetchableUrl = async (
   // NOT judged by the addresses it resolves to: behind a shared CDN that would refuse unrelated feeds
   // (full-rss-og0); see resolveSelfAddresses.
   const ownAddresses = ownAddressKeys(options?.selfAddresses);
-  if (ownAddresses.size > 0) {
-    const literal = addressKey(address);
-    if (literal != null && ownAddresses.has(literal)) {
-      throw new BlockedUrlError(`${url.host} is this service's own address`);
-    }
+  const literal = addressKey(address);
+  if (literal != null && ownAddresses.has(literal)) {
+    throw new BlockedUrlError(`${url.host} is this service's own address`);
   }
 
   const asIPv4 = parseIPv4(address);
@@ -491,6 +522,10 @@ export const parseFetchableUrl = async (
         `${address} is a private, reserved or local address`,
       );
     }
+    // Past the range checks this literal is fetchable, so the only thing left that could forbid it is being
+    // this service - which is exactly what cannot be decided when our own addresses are unknown
+    // (full-rss-pxq).
+    refuseUnverifiableSelfLiteral(url, options);
     return url;
   }
 
@@ -501,6 +536,7 @@ export const parseFetchableUrl = async (
         `${address} is a private, reserved or local address`,
       );
     }
+    refuseUnverifiableSelfLiteral(url, options);
     return url;
   }
 

@@ -88,17 +88,22 @@ const selfOriginsFor = (req: Request): string[] => {
 };
 
 let selfAddressCache:
-  | { key: string; addresses: string[]; expiresAt: number }
+  | { key: string; addresses: string[] | null; expiresAt: number }
   | undefined;
 
 /**
  * This service's own addresses, for the IP-LITERAL spelling of it only (cached, best effort). A target's
  * resolved answers are never compared against these - see resolveSelfAddresses for why a shared CDN address
  * cannot establish identity (full-rss-og0).
+ *
+ * `null` means "this deployment has addresses, but not ones we could learn" - a failed lookup, or no resolver
+ * at all. egress.ts treats that as a reason to refuse an IP-literal target instead of letting one through
+ * unexamined (full-rss-pxq). It is named rather than spelled as an empty array because an empty array is what a
+ * caller passes when it supplies no self-identity at all, and that is a different claim.
  */
 const selfAddressesFor = async (
   origins: readonly string[],
-): Promise<string[]> => {
+): Promise<string[] | null> => {
   const key = origins.join(",");
   const now = Date.now();
   if (selfAddressCache?.key === key && now < selfAddressCache.expiresAt) {
@@ -112,13 +117,23 @@ const selfAddressesFor = async (
       sanitizeForLog(`Could not resolve this service's own addresses: ${e}`),
     );
   }
+  const known = addresses.length > 0 ? addresses : null;
+  if (known == null) {
+    // Once per cache fill, not once per request: this is a degraded mode that changes what the service
+    // answers (IP-literal targets are refused), so it must not be silent (full-rss-pxq).
+    console.error(
+      sanitizeForLog(
+        `Could not determine this service's own addresses (${key}); IP-literal targets are refused until the lookup succeeds. Set ${SELF_HOSTS_ENV} to hostnames that resolve, or to the literals themselves.`,
+      ),
+    );
+  }
   selfAddressCache = {
     key,
-    addresses,
+    addresses: known,
     expiresAt: now +
-      (addresses.length > 0 ? SELF_ADDRESS_TTL_MS : SELF_ADDRESS_RETRY_MS),
+      (known != null ? SELF_ADDRESS_TTL_MS : SELF_ADDRESS_RETRY_MS),
   };
-  return addresses;
+  return known;
 };
 
 // Every rendered page (including errors and the deadline retry page) uses the same policy. The index has

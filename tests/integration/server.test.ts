@@ -155,6 +155,31 @@ Deno.test("a url aimed at a private or local target is refused with 403", async 
   }
 });
 
+Deno.test("an IP literal is refused when the service cannot resolve its own addresses", async () => {
+  // The wiring half of full-rss-pxq: egress.ts refuses an IP literal when `selfAddresses` is null, and this
+  // suite runs without net permission, so the server's own lookup comes back empty and must pass null rather
+  // than an empty array - otherwise the literal guard is silently absent in exactly the deployments that need
+  // it. Nothing may be fetched: the refusal happens while parsing the target.
+  let fetches = 0;
+  await withStubbedFetch(
+    () => {
+      fetches++;
+      return new Response("unexpected", { status: 200 });
+    },
+    async () => {
+      const res = await get("?url=http%3A%2F%2F93.184.216.34%2Ffeed.xml");
+      assertEqual(res.status, 403, "status");
+      assertHtmlHeaders(res);
+      assertIncludes(
+        await res.text(),
+        "only public http(s) addresses are supported",
+        "the refusal reaches the requester as a blocked target",
+      );
+      assertEqual(fetches, 0, "the literal was never fetched");
+    },
+  );
+});
+
 Deno.test("a url naming this service's own origin is refused with 403 and never fetched", async () => {
   // The first-order amplification: the requester asks this service to expand this service (full-rss-qxz). With
   // no FULL_RSS_SELF_HOSTS configured this suite runs the development fallback, where the origin that arrived

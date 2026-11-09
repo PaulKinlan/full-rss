@@ -713,6 +713,48 @@ Deno.test("this service's own IP literal is refused", async () => {
   );
 });
 
+Deno.test("an IP literal is refused when this deployment's own addresses are unknown", async () => {
+  // `selfAddresses: null` is how the server says "this deployment has addresses, but the lookup did not give
+  // them to me". The old code skipped the literal comparison on an empty answer, so the guard vanished exactly
+  // when it was needed and nothing said so (full-rss-pxq). An unknown identity cannot rule a literal out, so it
+  // is refused - and only the literal spelling, because a hostname still gets every check below it.
+  const options = {
+    resolveDns: resolver(PUBLIC_A),
+    selfOrigins: ["https://service.example"],
+    selfAddresses: null,
+  };
+  await assertRejects(
+    () => parseFetchableUrl("https://93.184.216.34/feed.xml", options),
+    "cannot be ruled out as this service itself",
+    "a public IPv4 literal with our addresses unknown",
+  );
+  await assertRejects(
+    () =>
+      parseFetchableUrl(
+        "http://[2606:2800:220:1:248:1893:25c8:1946]/x",
+        options,
+      ),
+    "cannot be ruled out as this service itself",
+    "a public IPv6 literal with our addresses unknown",
+  );
+  // A hostname is unaffected: it is judged by host and by its resolved addresses, both of which still work.
+  const named = await parseFetchableUrl(
+    "https://example.com/feed.xml",
+    options,
+  );
+  assertEqual(
+    named.href,
+    "https://example.com/feed.xml",
+    "a hostname is still fetchable while our own addresses are unknown",
+  );
+  // And a range-blocked literal keeps its more specific refusal: the address policy comes first.
+  await assertRejects(
+    () => parseFetchableUrl("http://192.168.1.10/feed.xml", options),
+    "private, reserved or local address",
+    "a private literal is still refused for being private",
+  );
+});
+
 Deno.test("a shared CDN address is not an identity: an unrelated feed on our address is fetchable", () => {
   // Regression (full-rss-og0): comparing a target's RESOLVED addresses against ours refused every ordinary
   // feed behind the same CDN or reverse proxy, which is most of them for a hosted deployment. Only the
