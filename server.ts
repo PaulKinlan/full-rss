@@ -96,8 +96,10 @@ let selfAddressCache:
  * resolved answers are never compared against these - see resolveSelfAddresses for why a shared CDN address
  * cannot establish identity (full-rss-og0).
  *
- * `null` means "this deployment has addresses, but not ones we could learn" - a failed lookup, or no resolver
- * at all. egress.ts treats that as a reason to refuse an IP-literal target instead of letting one through
+ * `null` means "this deployment has addresses, but not ones we could learn" - a failed lookup, no resolver
+ * at all, or ANY ONE configured host that could not be resolved, because a partial answer would look complete
+ * here and leave the failing host's own IP-literal spelling unguarded (full-rss-0b2). egress.ts treats that
+ * as a reason to refuse an IP-literal target instead of letting one through
  * unexamined (full-rss-pxq). It is named rather than spelled as an empty array because an empty array is what a
  * caller passes when it supplies no self-identity at all, and that is a different claim.
  */
@@ -109,7 +111,7 @@ const selfAddressesFor = async (
   if (selfAddressCache?.key === key && now < selfAddressCache.expiresAt) {
     return selfAddressCache.addresses;
   }
-  let addresses: string[] = [];
+  let addresses: string[] | null = [];
   try {
     addresses = await resolveSelfAddresses(origins);
   } catch (e) {
@@ -117,7 +119,7 @@ const selfAddressesFor = async (
       sanitizeForLog(`Could not resolve this service's own addresses: ${e}`),
     );
   }
-  const known = addresses.length > 0 ? addresses : null;
+  const known = addresses != null && addresses.length > 0 ? addresses : null;
   if (known == null) {
     // Once per cache fill, not once per request: this is a degraded mode that changes what the service
     // answers (IP-literal targets are refused), so it must not be silent (full-rss-pxq).

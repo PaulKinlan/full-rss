@@ -85,17 +85,17 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   one appended character through (full-rss-pbz). Addresses are compared **by
   value**, so the same service spelled as its own IP literal is refused too
   (full-rss-647). So is any IP literal when our own addresses could not be
-  determined, because an unknown identity cannot rule that literal out — the
-  guard fails **closed** rather than quietly checking one spelling less
-  (`full-rss-pxq`; the lookup is retried, and the service logs the degraded mode
-  once per retry window). A target's resolved ADDRESSES are deliberately not
-  compared against ours: behind a shared CDN or reverse proxy (Cloudflare, a
-  Deno Deploy edge, Vercel) thousands of unrelated sites share our address, so
-  that comparison refused every ordinary feed on the same front - a worse
-  failure than the hole it closed (full-rss-og0). An alias hostname pointing at
-  this service is therefore not detected, and is recorded as a residual. The
-  guard also covers the requester's `?url=` and every redirect hop, because
-  `guardedFetch` re-runs this function per hop.
+  determined - in whole or in part (full-rss-0b2) - because an unknown identity
+  cannot rule that literal out — the guard fails **closed** rather than quietly
+  checking one spelling less (`full-rss-pxq`; the lookup is retried, and the
+  service logs the degraded mode once per retry window). A target's resolved
+  ADDRESSES are deliberately not compared against ours: behind a shared CDN or
+  reverse proxy (Cloudflare, a Deno Deploy edge, Vercel) thousands of unrelated
+  sites share our address, so that comparison refused every ordinary feed on the
+  same front - a worse failure than the hole it closed (full-rss-og0). An alias
+  hostname pointing at this service is therefore not detected, and is recorded
+  as a residual. The guard also covers the requester's `?url=` and every
+  redirect hop, because `guardedFetch` re-runs this function per hop.
 
 ### DNS validation
 
@@ -278,24 +278,27 @@ Known limits that are accepted deliberately:
    logs that once; and if this service's own addresses cannot be resolved the
    host comparison still applies and any IP-literal target is **refused** until
    the lookup succeeds - the literal comparison is the one that cannot be made,
-   so instead of skipping it the guard fails closed (`full-rss-pxq`). Neither is
-   silent in the code, and both are worse than configuration, not equal to it. A
-   misconfigured entry cannot silently become a different host either:
-   `parseSelfHosts` rejects a userinfo, path, query or fragment, so
-   `https://service@attacker.example` fails the boot with an error instead of
-   configuring the attacker's host (full-rss-56w), and it rejects a non-http(s)
-   scheme (`file://host`, `data://host`), which parses to an opaque origin that
-   can never match a request and so would silence the guard while the config
-   looked set (full-rss-pm1). An **alias hostname** for this same service (a
-   name that resolves to our addresses) is likewise not detected, for the
-   shared-CDN reason above: an address match cannot establish that a distinct
-   Host routes here (full-rss-og0). The literal spelling of our own address IS
-   refused, because that is a statement about the target's spelling rather than
-   about who else lives at that address. A depth counter is **not** used, and
-   should not be added: the loop crosses independent HTTP requests, so any
-   "depth" would have to arrive in the request — the same client-controlled
-   input that made the Host header unusable. Identity of the service is the
-   property that can be trusted.
+   so instead of skipping it the guard fails closed (`full-rss-pxq`). The rule
+   covers a partial resolution the same way: one failing host among several
+   configured ones is treated as no determination at all, because the failing
+   host's own literal spelling is exactly the one a partial answer would leave
+   unchecked (`full-rss-0b2`). Neither is silent in the code, and both are worse
+   than configuration, not equal to it. A misconfigured entry cannot silently
+   become a different host either: `parseSelfHosts` rejects a userinfo, path,
+   query or fragment, so `https://service@attacker.example` fails the boot with
+   an error instead of configuring the attacker's host (full-rss-56w), and it
+   rejects a non-http(s) scheme (`file://host`, `data://host`), which parses to
+   an opaque origin that can never match a request and so would silence the
+   guard while the config looked set (full-rss-pm1). An **alias hostname** for
+   this same service (a name that resolves to our addresses) is likewise not
+   detected, for the shared-CDN reason above: an address match cannot establish
+   that a distinct Host routes here (full-rss-og0). The literal spelling of our
+   own address IS refused, because that is a statement about the target's
+   spelling rather than about who else lives at that address. A depth counter is
+   **not** used, and should not be added: the loop crosses independent HTTP
+   requests, so any "depth" would have to arrive in the request — the same
+   client-controlled input that made the Host header unusable. Identity of the
+   service is the property that can be trusted.
 
 ## Change discipline
 

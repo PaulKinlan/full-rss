@@ -23,6 +23,7 @@ import {
   parseSelfHosts,
   readCappedStream,
   readCappedText,
+  type ResolveDns,
   resolveSelfAddresses,
   sanitizeForLog,
 } from "../../egress.ts";
@@ -850,8 +851,10 @@ Deno.test("self hosts come from configuration, parsed strictly", () => {
 });
 
 Deno.test("resolveSelfAddresses uses a literal as its own address and resolves a name", async () => {
+  // `?.join()` so a null (unknown) answer fails the equality instead of the type check: these two shapes must
+  // be known, and the tests below pin what makes a set unknown.
   assertEqual(
-    (await resolveSelfAddresses(["http://93.184.216.34"])).join(),
+    (await resolveSelfAddresses(["http://93.184.216.34"]))?.join(),
     "93.184.216.34",
     "a configured literal needs no lookup",
   );
@@ -859,18 +862,68 @@ Deno.test("resolveSelfAddresses uses a literal as its own address and resolves a
     (await resolveSelfAddresses(
       ["https://service.test"],
       resolver(["93.184.216.34"]),
-    )).join(),
+    ))?.join(),
     "93.184.216.34",
     "a configured name is resolved through the injected resolver",
   );
-  // A lookup that fails leaves the host comparison in place rather than failing every request.
+  // A lookup that fails makes the whole set unknown rather than answering with the rest (full-rss-0b2).
   assertEqual(
-    (await resolveSelfAddresses(
+    await resolveSelfAddresses(
       ["https://gone.test"],
       () => Promise.reject(new Error("NXDOMAIN")),
-    )).length,
-    0,
-    "a failed lookup degrades to the host comparison",
+    ),
+    null,
+    "a failed lookup is an unknown, not a partial answer",
+  );
+  // No configured hosts at all is complete knowledge - of nothing.
+  assertEqual(
+    (await resolveSelfAddresses([]))?.join(),
+    "",
+    "no origins configured is an empty, complete answer",
+  );
+});
+
+Deno.test("a partial self-address resolution is an unknown, not a partial answer", async () => {
+  // Regression (full-rss-0b2): with two configured hosts and a transient DNS failure on one, the old code
+  // returned the surviving host's address alone. The caller cannot tell that from a complete answer, so the
+  // failing host's own IP-literal spelling went unguarded for the whole cache TTL - the reviewer's driver
+  // reproduced it as PARTIAL/ALLOW. The bead's exact repro shape, as a unit test:
+  const stub: ResolveDns = (hostname) =>
+    hostname === "good.example"
+      ? Promise.resolve(["93.184.216.34"])
+      : Promise.reject(new Error("SERVFAIL"));
+  assertEqual(
+    await resolveSelfAddresses(
+      ["https://good.example", "https://bad.example"],
+      stub,
+    ),
+    null,
+    "one failing host among several makes the whole set unknown",
+  );
+  // A configured literal is always known without a lookup, but it does not make a failed sibling complete:
+  // the set is only usable when EVERY configured host is known.
+  assertEqual(
+    await resolveSelfAddresses(
+      ["http://93.184.216.34", "https://bad.example"],
+      stub,
+    ),
+    null,
+    "a known literal next to a failing name is still an unknown set",
+  );
+  assertEqual(
+    (await resolveSelfAddresses(["https://good.example"], stub))?.join(),
+    "93.184.216.34",
+    "every host resolved is a complete answer",
+  );
+});
+
+Deno.test("a self host that resolves to no records is an unknown, not a known-empty answer", async () => {
+  // NODATA on our own name is a misconfiguration, not knowledge: an answer of zero records leaves this
+  // deployment's address unknown, so the set is null and the literal guard fails closed (full-rss-0b2).
+  assertEqual(
+    await resolveSelfAddresses(["https://empty.test"], resolver([])),
+    null,
+    "a name that answers with no records is not a known address",
   );
 });
 

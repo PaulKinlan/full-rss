@@ -421,8 +421,14 @@ const refuseUnverifiableSelfLiteral = (
 
 /**
  * Resolve this service's own configured hosts to addresses, so the guard can also refuse a target that spells
- * this service as its own IP literal. Best effort by design - a lookup that fails leaves the host comparison,
- * which is still correct, in place (and the residual is recorded in THREAT_MODEL.md).
+ * this service as its own IP literal. The result is the deployment's addresses, or `null` when they could not
+ * be determined IN FULL (full-rss-0b2): any configured hostname whose lookup fails, returns nothing, or has no
+ * resolver to run makes the WHOLE answer `null`, because a partial answer is indistinguishable from a complete
+ * one at the caller - and the host that failed is exactly the one whose IP-literal spelling would go unguarded
+ * while the rest looked safe. That is the same shape one level down as the total-failure rule
+ * (full-rss-pxq), and the caller handles it the same way: IP-literal targets are refused until the lookup
+ * succeeds, which the cache retries on the short TTL. A configured literal needs no lookup and is always
+ * known; a hostname is deliberately NOT judged by what it resolves to (full-rss-og0).
  *
  * Why the answers are not compared against a TARGET's answers. An address is not an identity behind a shared
  * front: services hosted behind one CDN or reverse proxy (Cloudflare, Deno Deploy's edge, Vercel) share public
@@ -434,31 +440,49 @@ const refuseUnverifiableSelfLiteral = (
 export const resolveSelfAddresses = async (
   origins: readonly string[],
   resolveDns?: ResolveDns,
-): Promise<string[]> => {
+): Promise<string[] | null> => {
   const resolver = resolveDns ??
     (netPermissionGranted() ? resolveForValidation : undefined);
   const addresses: string[] = [];
+  let complete = true;
   for (const origin of origins) {
     let hostname: string;
     try {
       hostname = new URL(origin).hostname.replace(/^\[|\]$/g, "");
     } catch {
+      complete = false;
       continue;
     }
-    if (hostname === "") continue;
+    if (hostname === "") {
+      complete = false;
+      continue;
+    }
     // A configured literal needs no lookup: it is its own address.
     if (addressKey(hostname) != null) {
       addresses.push(hostname);
       continue;
     }
-    if (resolver == null) continue;
-    try {
-      addresses.push(...await resolver(hostname));
-    } catch {
-      // Unresolved: degrade to the host comparison rather than failing requests.
+    if (resolver == null) {
+      complete = false;
+      continue;
     }
+    let answers: string[];
+    try {
+      answers = await resolver(hostname);
+    } catch {
+      // Unresolved: the set is unknown, not partial (full-rss-0b2).
+      complete = false;
+      continue;
+    }
+    if (answers.length === 0) {
+      // A name that answers with no records is not a known address either: "our host has no A/AAAA" is a
+      // misconfiguration this deployment must not paper over by guarding only its siblings (full-rss-0b2).
+      complete = false;
+      continue;
+    }
+    addresses.push(...answers);
   }
-  return addresses;
+  return complete ? addresses : null;
 };
 
 /**
