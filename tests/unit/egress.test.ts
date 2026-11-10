@@ -838,6 +838,44 @@ Deno.test("a v6 spelling of an own IPv4 address is the same address", async () =
   }
 });
 
+Deno.test("NAT64's local-use prefix is a different host, not the IPv4 in its tail", async () => {
+  // RFC 6052 puts the IPv4 address in the last 32 bits of the WELL-KNOWN prefix 64:ff9b::/96 only. RFC 8215's
+  // local-use prefix 64:ff9b:1::/48 is a different /48 whose suffix is operator-chosen, so reading its low 32
+  // bits as an IPv4 address conflated an unrelated IPv6 host with whatever those bits spelled - a wildcard that
+  // denied a public host as "this service's own address" (full-rss-96r).
+  const options = { selfAddresses: ["93.184.216.34"] };
+  const localUse = await parseFetchableUrl(
+    "http://[64:ff9b:1:abcd::5db8:d822]/feed.xml",
+    options,
+  );
+  assertEqual(
+    localUse.hostname,
+    "[64:ff9b:1:abcd::5db8:d822]",
+    "the local-use prefix is its own host, not the IPv4 its tail spells",
+  );
+  // The well-known prefix is still read as the address it carries, in both directions of the check.
+  await assertRejects(
+    () => parseFetchableUrl("http://[64:ff9b::5db8:d822]/feed.xml", options),
+    "this service's own address",
+    "the well-known prefix still spells our own address",
+  );
+  await assertRejects(
+    () => parseFetchableUrl("http://[64:ff9b::7f00:1]/feed.xml", options),
+    "private, reserved or local address",
+    "a well-known NAT64 of loopback is still blocked",
+  );
+  // ... and the local-use form of that same tail is not blocked on the strength of it either.
+  const localUseLoopback = await parseFetchableUrl(
+    "http://[64:ff9b:1:abcd::7f00:1]/feed.xml",
+    options,
+  );
+  assertEqual(
+    localUseLoopback.hostname,
+    "[64:ff9b:1:abcd::7f00:1]",
+    "the local-use prefix is not judged by its tail",
+  );
+});
+
 Deno.test("self hosts come from configuration, parsed strictly", () => {
   assertEqual(parseSelfHosts(undefined).length, 0, "unset means unconfigured");
   assertEqual(parseSelfHosts("").length, 0, "empty means unconfigured");

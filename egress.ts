@@ -122,8 +122,9 @@ const parseIPv6 = (host: string): number[] | null => {
 
 const ipv6ToV4 = (groups: number[]): bigint | null => {
   // The embedded IPv4 of a mapped (::ffff:0:0/96), translated (::ffff:0:0:0/96), compatible (::x.y.z.w,
-  // deprecated but parsed), NAT64 (64:ff9b::/96), 6to4 (2002::/16) or Teredo (2001::/32) address, as one
-  // 32-bit value.
+  // deprecated but parsed), NAT64 well-known prefix (64:ff9b::/96), 6to4 (2002::/16) or Teredo (2001::/32)
+  // address, as one 32-bit value. Each form is matched on its WHOLE prefix, never on a recognisable start: a
+  // host is only called "the same address" when the whole encoding says so (full-rss-96r).
   const tail = (groups[6] ?? 0) * 65536 + (groups[7] ?? 0);
   if (
     groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff
@@ -141,8 +142,17 @@ const ipv6ToV4 = (groups: number[]): bigint | null => {
   if (groups.slice(0, 6).every((group) => group === 0) && tail !== 0) {
     return BigInt(tail); // IPv4-compatible
   }
-  if (groups[0] === 0x64 && groups[1] === 0xff9b) {
-    return BigInt(tail); // NAT64
+  if (
+    groups[0] === 0x64 && groups[1] === 0xff9b &&
+    groups.slice(2, 6).every((group) => group === 0)
+  ) {
+    // NAT64, WELL-KNOWN PREFIX ONLY: 64:ff9b::/96 is exactly the first six groups being 0x64, 0xff9b and four
+    // zeros, with the IPv4 address in the last 32 bits (RFC 6052). Matching only the first two groups also
+    // caught 64:ff9b:1::/48 - RFC 8215's LOCAL-USE prefix, a different /48 with an operator-chosen suffix -
+    // and read its low 32 bits as an IPv4 address, which conflated an unrelated IPv6 host with whatever IPv4
+    // those bits happened to spell (full-rss-96r, found reviewing full-rss-2so). The local-use prefix is not
+    // read as IPv4 at all here: its suffix layout is not fixed by the RFC, so there is no address to claim.
+    return BigInt(tail);
   }
   if (groups[0] === 0x2002) {
     return BigInt(groups[1] * 65536 + groups[2]); // 6to4
