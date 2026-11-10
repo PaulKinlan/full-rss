@@ -172,12 +172,17 @@ text whose end could not be seen.
   TTL would serve an error to every later requester of that URL as if it were
   the article (full-rss-qxz). A non-2xx expansion therefore fails, and the item
   keeps the feed's own summary like any other expansion failure.
-- `feed.ts` sanitizes **feed-supplied** item markup (`content:encoded` and
-  `description`) with the same `sanitize-html` defaults at the single export
-  boundary, so items whose expansion was skipped or fell back cannot carry
-  publisher HTML (scripts, event handlers, `javascript:` URLs, iframes) into a
-  reader. Sanitization is idempotent under a fixed config, so expanded articles
-  pass through unchanged.
+- `feed.ts` sanitizes **feed-supplied** markup with the same `sanitize-html`
+  defaults at the single export boundary: every item's `content:encoded` and
+  `description`, and the channel's own `description` (`full-rss-gab`). The
+  channel blurb is a field readers render as HTML, so a publisher must not be
+  able to carry scripts, event handlers, `javascript:` URLs or iframes into a
+  reader through the channel while the same markup in an item would have been
+  stripped. Titles are **not** run through the sanitizer — on the channel or on
+  an item: a title is a text field, `escapeXml` is what makes it safe, and
+  sanitizing it would corrupt legitimate titles containing angle brackets.
+  Sanitization is idempotent under a fixed config, so expanded articles pass
+  through unchanged.
 - The same boundary **bounds the document's item count** at `MAX_ITEMS` (200,
   full-rss-l66): a feed with tens of thousands of entries may not turn unbounded
   entry count into unbounded per-item sanitization and build work. The bound
