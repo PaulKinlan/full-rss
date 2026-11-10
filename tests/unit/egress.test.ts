@@ -796,6 +796,48 @@ Deno.test("a self address is compared by value, not by spelling", async () => {
   );
 });
 
+Deno.test("a v6 spelling of an own IPv4 address is the same address", async () => {
+  // The guard compares addresses BY VALUE, and the same host has more than one spelling: the IPv4-mapped
+  // `::ffff:a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 and the deprecated translated/compatible forms all CARRY the
+  // IPv4 address. Keying those as plain v6 groups gave one host two spellings the self-reference guard could not
+  // match, and no range blocks the public form, so a feed could point at this service by `[::ffff:...]` and be
+  // expanded (full-rss-2so).
+  const options = { selfAddresses: ["93.184.216.34"] };
+  for (
+    const url of [
+      "http://[::ffff:93.184.216.34]/feed.xml", // IPv4-mapped, dotted tail
+      "http://[::ffff:5db8:d822]/feed.xml", // the same mapped address in hex
+      "http://[64:ff9b::5db8:d822]/feed.xml", // NAT64 (well-known prefix)
+      "http://[2002:5db8:d822::1]/feed.xml", // 6to4
+    ]
+  ) {
+    await assertRejects(
+      () => parseFetchableUrl(url, options),
+      "this service's own address",
+      `${url} is an own-address spelling`,
+    );
+  }
+  // The comparison is symmetric: an own address configured as the mapped spelling still matches the plain one.
+  await assertRejects(
+    () =>
+      parseFetchableUrl("http://93.184.216.34/feed.xml", {
+        selfAddresses: ["::ffff:93.184.216.34"],
+      }),
+    "this service's own address",
+    "our own address configured as a mapped literal",
+  );
+  // And one address over is a different host, in either family.
+  for (
+    const url of [
+      "http://[::ffff:93.184.216.35]/feed.xml",
+      "http://[64:ff9b::5db8:d823]/feed.xml",
+    ]
+  ) {
+    const other = await parseFetchableUrl(url, options);
+    assert(other != null, `${url} is a different host and stays fetchable`);
+  }
+});
+
 Deno.test("self hosts come from configuration, parsed strictly", () => {
   assertEqual(parseSelfHosts(undefined).length, 0, "unset means unconfigured");
   assertEqual(parseSelfHosts("").length, 0, "empty means unconfigured");

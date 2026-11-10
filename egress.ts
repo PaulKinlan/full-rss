@@ -376,12 +376,24 @@ export const parseSelfHosts = (raw: string | undefined): string[] => {
 /**
  * A canonical key for an address literal, so two spellings of one address compare equal (and so an address can
  * never be confused with a name). Returns null for anything that is not an IP literal.
+ *
+ * A v6 spelling whose low bits ARE an IPv4 address is keyed as that IPv4, because it is that host seen through a
+ * translator: the IPv4-mapped `::ffff:a.b.c.d`, the deprecated translated/compatible forms, NAT64
+ * `64:ff9b::/96`, 6to4 `2002::/16` and Teredo. Without this, `http://[::ffff:93.184.216.34]/` and
+ * `http://[64:ff9b::5db8:d822]/` were neither refused as this service's own address nor blocked by a range, so
+ * one host had two spellings that the self-reference guard could not see (full-rss-2so, found reviewing
+ * full-rss-pxq). It reuses `ipv6ToV4`, the helper the range check already reads these forms through, so the
+ * identity comparison and the blocking comparison can never disagree about what an address carries; that
+ * conservatism is deliberate there too - a 6to4 or Teredo address naming our own IPv4 is refused rather than
+ * followed.
  */
 const addressKey = (raw: string): string | null => {
   const v4 = parseIPv4(raw);
   if (v4 != null) return `v4:${v4}`;
   const v6 = parseIPv6(raw);
-  return v6 == null ? null : `v6:${v6.join(":")}`;
+  if (v6 == null) return null;
+  const embedded = ipv6ToV4(v6);
+  return embedded != null ? `v4:${embedded}` : `v6:${v6.join(":")}`;
 };
 
 /** The addresses this service answers on, as comparable keys. Empty when none are configured. */

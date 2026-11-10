@@ -84,18 +84,22 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   DNS host while `new URL()` preserves the dot — comparing the raw `host` let
   one appended character through (full-rss-pbz). Addresses are compared **by
   value**, so the same service spelled as its own IP literal is refused too
-  (full-rss-647). So is any IP literal when our own addresses could not be
-  determined, because an unknown identity cannot rule that literal out — the
-  guard fails **closed** rather than quietly checking one spelling less
-  (`full-rss-pxq`; the lookup is retried, and the service logs the degraded mode
-  once per retry window). A target's resolved ADDRESSES are deliberately not
-  compared against ours: behind a shared CDN or reverse proxy (Cloudflare, a
-  Deno Deploy edge, Vercel) thousands of unrelated sites share our address, so
-  that comparison refused every ordinary feed on the same front - a worse
-  failure than the hole it closed (full-rss-og0). An alias hostname pointing at
-  this service is therefore not detected, and is recorded as a residual. The
-  guard also covers the requester's `?url=` and every redirect hop, because
-  `guardedFetch` re-runs this function per hop.
+  (full-rss-647) — and that includes the v6 spellings that _carry_ our IPv4
+  address: IPv4-mapped `::ffff:a.b.c.d`, the deprecated translated/compatible
+  forms, NAT64 `64:ff9b::/96`, 6to4 and Teredo are keyed by the IPv4 they hold,
+  the same helper the range check reads them through, so one host cannot have a
+  spelling the guard cannot see (`full-rss-2so`). So is any IP literal when our
+  own addresses could not be determined, because an unknown identity cannot rule
+  that literal out — the guard fails **closed** rather than quietly checking one
+  spelling less (`full-rss-pxq`; the lookup is retried, and the service logs the
+  degraded mode once per retry window). A target's resolved ADDRESSES are
+  deliberately not compared against ours: behind a shared CDN or reverse proxy
+  (Cloudflare, a Deno Deploy edge, Vercel) thousands of unrelated sites share
+  our address, so that comparison refused every ordinary feed on the same
+  front - a worse failure than the hole it closed (full-rss-og0). An alias
+  hostname pointing at this service is therefore not detected, and is recorded
+  as a residual. The guard also covers the requester's `?url=` and every
+  redirect hop, because `guardedFetch` re-runs this function per hop.
 
 ### DNS validation
 
