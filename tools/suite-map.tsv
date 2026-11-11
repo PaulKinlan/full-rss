@@ -23,6 +23,11 @@
 # "nothing outside egress.ts reaches the network", so the change that breaks it is a change to ANY of these
 # files. The check is one find + grep, so its cost in the fast gate is noise (full-rss-sc4).
 main.ts	tests/integration/main.test.ts tools/single-egress.test.sh
+# Log sanitization is its own module since full-rss-had (the ADR full-rss-7d0 split), so a sanitizer change
+# selects the sanitizer suite and an egress change keeps the egress ones. It is still an application module,
+# so it carries the single-egress row like every other one - the invariant is about where a fetch may appear,
+# not about what this file happens to contain today.
+log-sanitize.ts	tests/unit/log-sanitize.test.ts tools/single-egress.test.sh
 egress.ts	tests/unit/egress.test.ts tests/unit/content.test.ts tests/integration/server.test.ts tests/unit/feed.test.ts tools/single-egress.test.sh
 content.ts	tests/unit/content.test.ts tools/single-egress.test.sh
 feed.ts	tests/unit/feed.test.ts tools/single-egress.test.sh

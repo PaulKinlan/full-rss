@@ -19,8 +19,8 @@ import {
   parseFetchableUrl,
   readCappedStream,
   readCappedText,
-  sanitizeForLog,
 } from "./egress.ts";
+import { sanitizeForLog } from "./log-sanitize.ts";
 
 // Deno KV is opened LAZILY, on first use. Importing this module (a test importing the transform, for
 // instance) must not need KV permissions or a database handle; only serving and fetching do.
