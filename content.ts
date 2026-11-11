@@ -82,6 +82,107 @@ export const convertToMarkdown = (html: string): string => {
   return `# ${title}\n\n${markdown}`;
 };
 
+/*
+  Decompress a cached article and render it, under the SAME budget the fetch was given (full-rss-sc4): the cache
+  holds gzip, and a cache entry is not trusted input - a few kilobytes of gzip can expand to gigabytes (a
+  decompression bomb), so an unbounded `.text()` here would undo the fetch-side cap. `Response` is just the
+  adapter that turns the cached bytes into a byte stream; nothing here touches the network.
+*/
+const renderArticle = async (
+  content: Uint8Array<ArrayBuffer>,
+): Promise<string> => {
+  const newContent = await readCappedStream(
+    new Response(content).body!.pipeThrough(new DecompressionStream("gzip")),
+    MAX_ARTICLE_BYTES,
+  );
+
+  return sanitizeHtml(marked.parse(newContent));
+};
+
+/*
+  Concurrent expansions of the SAME article are one piece of work, not several. A feed that names one article
+  twice, or two requests for the same cold feed arriving together, otherwise run the whole pipeline - the
+  capped read, the cheerio+turndown conversion, the gzip, the KV write - once per caller, with every copy
+  holding its own multi-megabyte buffers at the same instant (full-rss-ca7, the factory finding
+  tm-no-singleflight-article-conversion).
+
+  The key is what makes the work identical, not merely the URL: the article hash AND the egress policy the
+  fetch runs under. `selfOrigins`/`selfAddresses` decide which redirect hops are allowed, and a deployment that
+  has not set FULL_RSS_SELF_HOSTS derives its origin from the request's Host header (full-rss-647), so two
+  callers with different policies must not share one fetch whose hops were checked against the other's.
+
+  Entries are removed when the shared run settles (in `finally`), so the map holds exactly the expansions that
+  are in flight: a failure is handed to the callers already waiting on it and is never remembered for the next
+  one, and a completed article is found in the cache instead.
+*/
+const inFlightArticles = new Map<string, Promise<string>>();
+
+/*
+  A stable identity for a policy object, so it can take part in the key below. The egress policy is partly made
+  of functions (`resolveDns`) and of per-caller objects (`store`), which have no useful spelling; a WeakMap gives
+  each INSTANCE a number instead, so the same injected resolver or cache shared by two callers means "same
+  policy" and two different ones do not. Weak, because a policy object is not something this module should keep
+  alive.
+*/
+const policyIdentities = new WeakMap<object, number>();
+let nextPolicyIdentity = 0;
+
+const policyIdentity = (value: object | undefined): string => {
+  if (value == null) return "default";
+  let identity = policyIdentities.get(value);
+  if (identity == null) {
+    identity = ++nextPolicyIdentity;
+    policyIdentities.set(value, identity);
+  }
+  return `${identity}`;
+};
+
+/*
+  The egress policy an article was fetched under, as one comparable string: the self-origin/self-address
+  configuration that decides which targets are this service, and the resolver instance that validates each
+  redirect hop.
+
+  It is part of BOTH identities this module keys on - the in-flight expansion (full-rss-515) and the cached
+  article (full-rss-54i) - for one reason: what is shared here is not just bytes, it is the RESULT of a fetch
+  whose redirect hops were validated against this policy. A caller with a stricter resolver must neither join a
+  laxer caller's expansion nor be served the article that expansion cached, or its policy is bypassed by
+  whichever request happened to arrive first.
+*/
+/*
+  A restart makes the resolver's identity mean something else: the ordinal above lives in one process, and the
+  cache it is part of does not (`Deno.Kv` persists), so the next process can hand the number 1 to a DIFFERENT
+  resolver and read an article whose hops that other resolver allowed (full-rss-dtc, found reviewing
+  full-rss-54i). A per-process nonce keeps custom-resolver entries readable only by the process that wrote them -
+  the only claim a per-process policy can honestly make - while the default resolver, which is the same thing in
+  every process, keeps its entries shareable across restarts (which is the only configuration a deployment runs).
+*/
+const processNonce = crypto.randomUUID();
+
+const resolverKey = (resolveDns: FetchUrlOptions["resolveDns"]): string =>
+  resolveDns == null
+    ? "default"
+    : `custom:${processNonce}:${policyIdentity(resolveDns)}`;
+
+const policyKey = (options: FetchUrlOptions): string => {
+  // `null` is a real state - "this deployment has addresses we could not learn" (full-rss-pxq) - so it is
+  // spelled distinctly from "no addresses were supplied at all" rather than collapsed into an empty list.
+  const addresses = options.selfAddresses === null
+    ? String.fromCharCode(0) + "unknown"
+    : (options.selfAddresses ?? []).join(",");
+  return `${(options.selfOrigins ?? []).join(",")}|${addresses}|` +
+    resolverKey(options.resolveDns);
+};
+
+/*
+  The in-flight key adds the cache to the policy: the shared run writes to the FIRST caller's store, so a caller
+  with a different cache must run its own expansion or its cache could never be filled.
+*/
+const singleFlightKey = (
+  urlHash: string,
+  options: FetchUrlOptions,
+  store: Pick<Deno.Kv, "get" | "set"> | undefined,
+): string => `${urlHash}|${policyKey(options)}|${policyIdentity(store)}`;
+
 export const fetchContent = async (
   url: string,
   signal?: AbortSignal,
@@ -102,14 +203,45 @@ export const fetchContent = async (
 
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
   const cache = store ?? await kv();
-  const contentKV = await cache.get([urlHash]);
+
+  // Join an expansion that is already running for this article before touching the cache: the caller waits for
+  // the work instead of repeating it, and gets exactly the document the first caller gets.
+  const flightKey = singleFlightKey(urlHash, egressOptions, store);
+  const inFlight = inFlightArticles.get(flightKey);
+  if (inFlight != null) {
+    return await inFlight;
+  }
+
+  // The cached article is keyed by the policy as well as the URL: the bytes are the product of a fetch whose
+  // redirect hops were validated under THAT policy, so serving them to a caller with a stricter resolver would
+  // hand it content its own policy refuses (full-rss-54i). In a deployment the policy is constant (one
+  // configuration, the default resolver), so this costs nothing there; it is the per-caller resolver of a test
+  // or an embedder that gets its own entries.
+  const cacheKey = [urlHash, policyKey(egressOptions)];
+  const contentKV = await cache.get(cacheKey);
   // Typed with an explicit ArrayBuffer: the value is fed back to `new Response(...)` below, and a
   // Uint8Array over a (possibly shared) ArrayBufferLike is not a valid BodyInit.
-  let content: Uint8Array<ArrayBuffer> = contentKV?.value as Uint8Array<
-    ArrayBuffer
-  >;
+  const content = contentKV?.value as Uint8Array<ArrayBuffer> | undefined;
 
-  if (content == null) {
+  if (content != null) {
+    return await renderArticle(content);
+  }
+
+  // Re-check with NO `await` between the lookup and the registration below: the cache read above is a
+  // suspension point, so callers that arrive together can all miss the map on the first check and then all
+  // start an expansion (measured: three concurrent requests for one cold feed fetched the second article
+  // three times). Reading the map and inserting into it in one uninterrupted block is what makes the
+  // registration atomic, and JS's single thread is the only lock this needs.
+  const raced = inFlightArticles.get(flightKey);
+  if (raced != null) {
+    return await raced;
+  }
+
+  // The expansion runs under the FIRST caller's signal: an abandoned request bounds the work it started, and a
+  // caller that joins a run whose owner then aborts sees the same failure any expansion error produces - the
+  // item keeps the feed's own summary (feed.ts). The alternative, dropping the signal, would let an abandoned
+  // expansion keep fetching and converting with nobody waiting for it.
+  const expansion = (async (): Promise<string> => {
     // Think about queing this later.
     const response = await guardedFetch(target, egressOptions);
 
@@ -170,26 +302,25 @@ export const fetchContent = async (
       offset += array.byteLength;
     }
 
-    content = concatenated;
-
     // Cache failures must not lose an otherwise successfully converted article or become unhandled rejections.
     try {
-      await cache.set([urlHash], content, {
+      await cache.set(cacheKey, concatenated, {
         expireIn: 60 * 1000, // 60 seconds
       });
     } catch (e) {
       console.error(sanitizeForLog(`Failed to cache article: ${e}; ${url}`));
     }
+
+    return await renderArticle(concatenated);
+  })();
+
+  // Register before awaiting, so a caller arriving in the same turn joins this run rather than starting one.
+  inFlightArticles.set(flightKey, expansion);
+  try {
+    return await expansion;
+  } finally {
+    // Only the run that registered an entry removes it, and only once it has settled: what stays in the map is
+    // exactly what is in flight.
+    inFlightArticles.delete(flightKey);
   }
-
-  // Decompress the content, under the SAME budget as the fetch above (full-rss-sc4): the cache holds gzip,
-  // and a cache entry is not trusted input - a few kilobytes of gzip can expand to gigabytes (a
-  // decompression bomb), so an unbounded `.text()` here would undo the fetch-side cap. `Response` is just
-  // the adapter that turns the cached bytes into a byte stream; nothing here touches the network.
-  const newContent = await readCappedStream(
-    new Response(content).body!.pipeThrough(new DecompressionStream("gzip")),
-    MAX_ARTICLE_BYTES,
-  );
-
-  return sanitizeHtml(marked.parse(newContent));
 };

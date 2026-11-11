@@ -297,3 +297,333 @@ Deno.test("fetchContent refuses a private or local article URL, before any netwo
     );
   }
 });
+
+/*
+  Concurrent expansions of one article are ONE piece of work (full-rss-ca7, the factory finding
+  tm-no-singleflight-article-conversion). A feed that names the same article twice, or two requests for the
+  same cold feed arriving together, otherwise repeat the capped read, the turndown conversion, the gzip and the
+  cache write per caller, with every copy holding its own buffers at the same moment.
+
+  These tests drive the injectable `store`, so they need no KV and no network: the only upstream work they
+  count is the stubbed `fetch`, and the only cache work they count is the stub's `set`.
+*/
+const countingStore = (writes: { count: number }) =>
+  ({
+    get: () => Promise.resolve({ value: null }),
+    set: () => {
+      writes.count++;
+      return Promise.resolve({ ok: true });
+    },
+  }) as unknown as Pick<Deno.Kv, "get" | "set">;
+
+Deno.test("concurrent expansions of one article share a single fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async () => {
+    fetches++;
+    await held; // keep the first expansion open until the second caller has joined it
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://example.com/single-flight";
+  try {
+    const first = fetchContent(url, undefined, store);
+    // Let the first call reach the in-flight map before the second one looks for it.
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const second = fetchContent(url, undefined, store);
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assertEqual(fetches, 1, "one upstream fetch for two concurrent callers");
+    assertEqual(writes.count, 1, "one cache write");
+    assertIncludes(a, "Hello world.", "the article is converted");
+    assertEqual(a, b, "both callers get the same document");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("a failed expansion is shared with waiters but not remembered", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async () => {
+    fetches++;
+    await held; // overlap the two callers, exactly as two slow upstream fetches would
+    return new Response("error page", { status: 500 });
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://example.com/single-flight-error";
+  try {
+    const first = fetchContent(url, undefined, store);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const second = fetchContent(url, undefined, store);
+    release();
+    const [a, b] = await Promise.allSettled([first, second]);
+    assertEqual(a.status, "rejected", "the first caller sees the failure");
+    assertEqual(b.status, "rejected", "the waiting caller sees it too");
+    assertEqual(fetches, 1, "the failure was not fetched twice");
+    // The entry is removed when the run settles, so the next caller tries again rather than re-reading a
+    // remembered failure.
+    await assertRejects(
+      () => fetchContent(url, undefined, store),
+      "HTTP 500",
+      "a later call expands the article again",
+    );
+    assertEqual(fetches, 2, "the failure is not kept in the in-flight map");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callers under different egress policies do not share one expansion", async () => {
+  // The policy decides which redirect hops an expansion may follow, so two callers must not be handed an
+  // article whose hop decisions were made against the other caller's configuration (full-rss-647).
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = (() => {
+    fetches++;
+    return Promise.resolve(new Response(PAGE));
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://example.com/two-policies";
+  try {
+    const [a, b] = await Promise.all([
+      fetchContent(url, undefined, store, {
+        selfOrigins: ["https://one.test"],
+      }),
+      fetchContent(url, undefined, store, {
+        selfOrigins: ["https://two.test"],
+      }),
+    ]);
+    assertEqual(fetches, 2, "each policy expands the article on its own");
+    assertEqual(a, b, "the article itself is of course the same");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callers that both miss the cache still coalesce", async () => {
+  // The registration race: the cache read is a suspension point, so two callers arriving together can both
+  // find the in-flight map empty, both read the cache, and then both start an expansion - measured as three
+  // fetches of one article from three concurrent requests for one cold feed. The lookup and the registration
+  // therefore happen in one uninterrupted block after the cache read, and a slow cache read is what makes the
+  // difference visible here.
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async () => {
+    fetches++;
+    await held;
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const slowStore = {
+    get: () =>
+      new Promise((resolve) => setTimeout(() => resolve({ value: null }), 20)),
+    set: () => {
+      writes.count++;
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  const url = "https://example.com/slow-cache-read";
+  try {
+    const first = fetchContent(url, undefined, slowStore);
+    const second = fetchContent(url, undefined, slowStore);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assertEqual(fetches, 1, "a slow cache read does not defeat coalescing");
+    assertEqual(writes.count, 1, "one cache write");
+    assertEqual(a, b, "both callers get the same document");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callers with different DNS policies do not share one expansion", async () => {
+  // The resolver is part of the egress policy: it is what each redirect hop is validated against. Sharing one
+  // fetch between a lax caller and a strict one handed the strict caller an article fetched through a hop its
+  // own policy refuses (full-rss-515, found reviewing full-rss-ca7): here the article redirects to a host the
+  // strict resolver maps to loopback.
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    fetches++;
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("first.test")) {
+      await held;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://second.test/article" },
+      });
+    }
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://first.test/article";
+  const permissive = { resolveDns: () => Promise.resolve(["8.8.8.8"]) };
+  const strict = {
+    resolveDns: (host: string) =>
+      Promise.resolve([host === "second.test" ? "127.0.0.1" : "8.8.8.8"]),
+  };
+  try {
+    const laxCall = fetchContent(url, undefined, store, permissive);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const strictCall = fetchContent(url, undefined, store, strict);
+    release();
+    const [lax, strictResult] = await Promise.allSettled([laxCall, strictCall]);
+    assertEqual(lax.status, "fulfilled", "the permissive caller succeeds");
+    assertEqual(
+      strictResult.status,
+      "rejected",
+      "the strict caller keeps its own redirect policy",
+    );
+    assert(
+      String((strictResult as PromiseRejectedResult).reason).includes(
+        "private address",
+      ),
+      "and refuses the hop its own resolver blocks",
+    );
+    // The same resolver SHARED by two callers is the same policy, so they still coalesce - the key identifies
+    // the resolver instance, it does not disable coalescing whenever one is supplied.
+    const before = fetches;
+    const a = fetchContent(url, undefined, store, permissive);
+    const b = fetchContent(url, undefined, store, permissive);
+    await Promise.all([a, b]);
+    // One expansion is two upstream fetches (the article and its redirect target); two coalesced callers are
+    // still two, and two separate expansions would be four.
+    assertEqual(
+      fetches - before,
+      2,
+      "two callers with the same resolver still share one expansion",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("a cached article is not served across egress policies", async () => {
+  // The in-flight fix covered concurrent callers; the CACHE was still keyed by the URL alone, so a lax caller
+  // could fill it and a strict caller was then handed that article without its own redirect policy ever being
+  // consulted (full-rss-54i, found reviewing full-rss-515). The bytes in the cache are the product of a fetch
+  // whose hops were validated under the policy that fetched them, so the policy is part of the cache key.
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = ((input: string | URL | Request) => {
+    fetches++;
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("first.test")) {
+      return Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://second.test/article" },
+        }),
+      );
+    }
+    return Promise.resolve(new Response(PAGE));
+  }) as typeof globalThis.fetch;
+  // A real store: it returns what was written, so the second call is a genuine cache hit.
+  const entries = new Map<string, Uint8Array<ArrayBuffer>>();
+  const store = {
+    get: (key: Deno.KvKey[]) =>
+      Promise.resolve({ value: entries.get(key.join("|")) ?? null }),
+    set: (key: Deno.KvKey[], value: Uint8Array<ArrayBuffer>) => {
+      entries.set(key.join("|"), value);
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  const url = "https://first.test/article";
+  const permissive = { resolveDns: () => Promise.resolve(["8.8.8.8"]) };
+  const strict = {
+    resolveDns: (host: string) =>
+      Promise.resolve([host === "second.test" ? "127.0.0.1" : "8.8.8.8"]),
+  };
+  try {
+    const lax = await fetchContent(url, undefined, store, permissive);
+    assertIncludes(lax, "Hello world.", "the lax caller gets the article");
+    assertEqual(entries.size, 1, "and caches it");
+    // The same policy reads that entry back: no second fetch.
+    const again = await fetchContent(url, undefined, store, permissive);
+    assertEqual(again, lax, "the permissive caller gets its cached article");
+    const fetchesBeforeStrict = fetches;
+    // A stricter policy must not be served it: its own redirect check refuses the hop.
+    await assertRejects(
+      () => fetchContent(url, undefined, store, strict),
+      "private address",
+      "the strict caller refuses the cached hop it would refuse live",
+    );
+    assertEqual(
+      fetches,
+      fetchesBeforeStrict + 1,
+      "the strict caller ran its own expansion (its first leg) instead of reading the other " +
+        "policy's entry, and the refused hop was never fetched",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("a restart does not let a new process read an old resolver's cache", async () => {
+  // The resolver's identity is an ordinal that only means anything inside one process, while the cache it takes
+  // part in (`Deno.Kv`) survives a restart. Two module instances stand in for two processes - Deno treats the
+  // query string as a different module - so the second instance assigns its ordinal 1 to a DIFFERENT resolver,
+  // exactly as a fresh process would (full-rss-dtc, found reviewing full-rss-54i).
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("first.test")) {
+      return Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://second.test/article" },
+        }),
+      );
+    }
+    return Promise.resolve(new Response(PAGE));
+  }) as typeof globalThis.fetch;
+  const entries = new Map<string, Uint8Array<ArrayBuffer>>();
+  const sharedStore = {
+    get: (key: Deno.KvKey[]) =>
+      Promise.resolve({ value: entries.get(key.join("|")) ?? null }),
+    set: (key: Deno.KvKey[], value: Uint8Array<ArrayBuffer>) => {
+      entries.set(key.join("|"), value);
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  const url = "https://first.test/article";
+  const permissive = { resolveDns: () => Promise.resolve(["8.8.8.8"]) };
+  const strict = {
+    resolveDns: (host: string) =>
+      Promise.resolve([host === "second.test" ? "127.0.0.1" : "8.8.8.8"]),
+  };
+  try {
+    const beforeRestart = await import("../../content.ts");
+    const lax = await beforeRestart.fetchContent(
+      url,
+      undefined,
+      sharedStore,
+      permissive,
+    );
+    assertIncludes(lax, "Hello world.", "the lax process caches the article");
+    assertEqual(entries.size, 1, "and leaves it in the persistent cache");
+    // The "new process": same persisted cache, a brand-new module instance.
+    const afterRestart = await import("../../content.ts?restart=1");
+    await assertRejects(
+      () => afterRestart.fetchContent(url, undefined, sharedStore, strict),
+      "private address",
+      "the new process applies its own resolver instead of reading the old entry",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
