@@ -82,6 +82,53 @@ export const convertToMarkdown = (html: string): string => {
   return `# ${title}\n\n${markdown}`;
 };
 
+/*
+  Decompress a cached article and render it, under the SAME budget the fetch was given (full-rss-sc4): the cache
+  holds gzip, and a cache entry is not trusted input - a few kilobytes of gzip can expand to gigabytes (a
+  decompression bomb), so an unbounded `.text()` here would undo the fetch-side cap. `Response` is just the
+  adapter that turns the cached bytes into a byte stream; nothing here touches the network.
+*/
+const renderArticle = async (
+  content: Uint8Array<ArrayBuffer>,
+): Promise<string> => {
+  const newContent = await readCappedStream(
+    new Response(content).body!.pipeThrough(new DecompressionStream("gzip")),
+    MAX_ARTICLE_BYTES,
+  );
+
+  return sanitizeHtml(marked.parse(newContent));
+};
+
+/*
+  Concurrent expansions of the SAME article are one piece of work, not several. A feed that names one article
+  twice, or two requests for the same cold feed arriving together, otherwise run the whole pipeline - the
+  capped read, the cheerio+turndown conversion, the gzip, the KV write - once per caller, with every copy
+  holding its own multi-megabyte buffers at the same instant (full-rss-ca7, the factory finding
+  tm-no-singleflight-article-conversion).
+
+  The key is what makes the work identical, not merely the URL: the article hash AND the egress policy the
+  fetch runs under. `selfOrigins`/`selfAddresses` decide which redirect hops are allowed, and a deployment that
+  has not set FULL_RSS_SELF_HOSTS derives its origin from the request's Host header (full-rss-647), so two
+  callers with different policies must not share one fetch whose hops were checked against the other's.
+
+  Entries are removed when the shared run settles (in `finally`), so the map holds exactly the expansions that
+  are in flight: a failure is handed to the callers already waiting on it and is never remembered for the next
+  one, and a completed article is found in the cache instead.
+*/
+const inFlightArticles = new Map<string, Promise<string>>();
+
+const singleFlightKey = (
+  urlHash: string,
+  options: FetchUrlOptions,
+): string => {
+  // `null` is a real state - "this deployment has addresses we could not learn" (full-rss-pxq) - so it is
+  // spelled distinctly from "no addresses were supplied at all" rather than collapsed into an empty list.
+  const addresses = options.selfAddresses === null
+    ? String.fromCharCode(0) + "unknown"
+    : (options.selfAddresses ?? []).join(",");
+  return `${urlHash}|${(options.selfOrigins ?? []).join(",")}|${addresses}`;
+};
+
 export const fetchContent = async (
   url: string,
   signal?: AbortSignal,
@@ -102,14 +149,39 @@ export const fetchContent = async (
 
   const urlHash = crypto.createHash("sha256").update(url).digest("hex");
   const cache = store ?? await kv();
+
+  // Join an expansion that is already running for this article before touching the cache: the caller waits for
+  // the work instead of repeating it, and gets exactly the document the first caller gets.
+  const flightKey = singleFlightKey(urlHash, egressOptions);
+  const inFlight = inFlightArticles.get(flightKey);
+  if (inFlight != null) {
+    return await inFlight;
+  }
+
   const contentKV = await cache.get([urlHash]);
   // Typed with an explicit ArrayBuffer: the value is fed back to `new Response(...)` below, and a
   // Uint8Array over a (possibly shared) ArrayBufferLike is not a valid BodyInit.
-  let content: Uint8Array<ArrayBuffer> = contentKV?.value as Uint8Array<
-    ArrayBuffer
-  >;
+  const content = contentKV?.value as Uint8Array<ArrayBuffer> | undefined;
 
-  if (content == null) {
+  if (content != null) {
+    return await renderArticle(content);
+  }
+
+  // Re-check with NO `await` between the lookup and the registration below: the cache read above is a
+  // suspension point, so callers that arrive together can all miss the map on the first check and then all
+  // start an expansion (measured: three concurrent requests for one cold feed fetched the second article
+  // three times). Reading the map and inserting into it in one uninterrupted block is what makes the
+  // registration atomic, and JS's single thread is the only lock this needs.
+  const raced = inFlightArticles.get(flightKey);
+  if (raced != null) {
+    return await raced;
+  }
+
+  // The expansion runs under the FIRST caller's signal: an abandoned request bounds the work it started, and a
+  // caller that joins a run whose owner then aborts sees the same failure any expansion error produces - the
+  // item keeps the feed's own summary (feed.ts). The alternative, dropping the signal, would let an abandoned
+  // expansion keep fetching and converting with nobody waiting for it.
+  const expansion = (async (): Promise<string> => {
     // Think about queing this later.
     const response = await guardedFetch(target, egressOptions);
 
@@ -170,26 +242,25 @@ export const fetchContent = async (
       offset += array.byteLength;
     }
 
-    content = concatenated;
-
     // Cache failures must not lose an otherwise successfully converted article or become unhandled rejections.
     try {
-      await cache.set([urlHash], content, {
+      await cache.set([urlHash], concatenated, {
         expireIn: 60 * 1000, // 60 seconds
       });
     } catch (e) {
       console.error(sanitizeForLog(`Failed to cache article: ${e}; ${url}`));
     }
+
+    return await renderArticle(concatenated);
+  })();
+
+  // Register before awaiting, so a caller arriving in the same turn joins this run rather than starting one.
+  inFlightArticles.set(flightKey, expansion);
+  try {
+    return await expansion;
+  } finally {
+    // Only the run that registered an entry removes it, and only once it has settled: what stays in the map is
+    // exactly what is in flight.
+    inFlightArticles.delete(flightKey);
   }
-
-  // Decompress the content, under the SAME budget as the fetch above (full-rss-sc4): the cache holds gzip,
-  // and a cache entry is not trusted input - a few kilobytes of gzip can expand to gigabytes (a
-  // decompression bomb), so an unbounded `.text()` here would undo the fetch-side cap. `Response` is just
-  // the adapter that turns the cached bytes into a byte stream; nothing here touches the network.
-  const newContent = await readCappedStream(
-    new Response(content).body!.pipeThrough(new DecompressionStream("gzip")),
-    MAX_ARTICLE_BYTES,
-  );
-
-  return sanitizeHtml(marked.parse(newContent));
 };

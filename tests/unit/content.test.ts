@@ -297,3 +297,152 @@ Deno.test("fetchContent refuses a private or local article URL, before any netwo
     );
   }
 });
+
+/*
+  Concurrent expansions of one article are ONE piece of work (full-rss-ca7, the factory finding
+  tm-no-singleflight-article-conversion). A feed that names the same article twice, or two requests for the
+  same cold feed arriving together, otherwise repeat the capped read, the turndown conversion, the gzip and the
+  cache write per caller, with every copy holding its own buffers at the same moment.
+
+  These tests drive the injectable `store`, so they need no KV and no network: the only upstream work they
+  count is the stubbed `fetch`, and the only cache work they count is the stub's `set`.
+*/
+const countingStore = (writes: { count: number }) =>
+  ({
+    get: () => Promise.resolve({ value: null }),
+    set: () => {
+      writes.count++;
+      return Promise.resolve({ ok: true });
+    },
+  }) as unknown as Pick<Deno.Kv, "get" | "set">;
+
+Deno.test("concurrent expansions of one article share a single fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async () => {
+    fetches++;
+    await held; // keep the first expansion open until the second caller has joined it
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://example.com/single-flight";
+  try {
+    const first = fetchContent(url, undefined, store);
+    // Let the first call reach the in-flight map before the second one looks for it.
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const second = fetchContent(url, undefined, store);
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assertEqual(fetches, 1, "one upstream fetch for two concurrent callers");
+    assertEqual(writes.count, 1, "one cache write");
+    assertIncludes(a, "Hello world.", "the article is converted");
+    assertEqual(a, b, "both callers get the same document");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("a failed expansion is shared with waiters but not remembered", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async () => {
+    fetches++;
+    await held; // overlap the two callers, exactly as two slow upstream fetches would
+    return new Response("error page", { status: 500 });
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://example.com/single-flight-error";
+  try {
+    const first = fetchContent(url, undefined, store);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const second = fetchContent(url, undefined, store);
+    release();
+    const [a, b] = await Promise.allSettled([first, second]);
+    assertEqual(a.status, "rejected", "the first caller sees the failure");
+    assertEqual(b.status, "rejected", "the waiting caller sees it too");
+    assertEqual(fetches, 1, "the failure was not fetched twice");
+    // The entry is removed when the run settles, so the next caller tries again rather than re-reading a
+    // remembered failure.
+    await assertRejects(
+      () => fetchContent(url, undefined, store),
+      "HTTP 500",
+      "a later call expands the article again",
+    );
+    assertEqual(fetches, 2, "the failure is not kept in the in-flight map");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callers under different egress policies do not share one expansion", async () => {
+  // The policy decides which redirect hops an expansion may follow, so two callers must not be handed an
+  // article whose hop decisions were made against the other caller's configuration (full-rss-647).
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = (() => {
+    fetches++;
+    return Promise.resolve(new Response(PAGE));
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://example.com/two-policies";
+  try {
+    const [a, b] = await Promise.all([
+      fetchContent(url, undefined, store, {
+        selfOrigins: ["https://one.test"],
+      }),
+      fetchContent(url, undefined, store, {
+        selfOrigins: ["https://two.test"],
+      }),
+    ]);
+    assertEqual(fetches, 2, "each policy expands the article on its own");
+    assertEqual(a, b, "the article itself is of course the same");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callers that both miss the cache still coalesce", async () => {
+  // The registration race: the cache read is a suspension point, so two callers arriving together can both
+  // find the in-flight map empty, both read the cache, and then both start an expansion - measured as three
+  // fetches of one article from three concurrent requests for one cold feed. The lookup and the registration
+  // therefore happen in one uninterrupted block after the cache read, and a slow cache read is what makes the
+  // difference visible here.
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async () => {
+    fetches++;
+    await held;
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const slowStore = {
+    get: () =>
+      new Promise((resolve) => setTimeout(() => resolve({ value: null }), 20)),
+    set: () => {
+      writes.count++;
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  const url = "https://example.com/slow-cache-read";
+  try {
+    const first = fetchContent(url, undefined, slowStore);
+    const second = fetchContent(url, undefined, slowStore);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assertEqual(fetches, 1, "a slow cache read does not defeat coalescing");
+    assertEqual(writes.count, 1, "one cache write");
+    assertEqual(a, b, "both callers get the same document");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
