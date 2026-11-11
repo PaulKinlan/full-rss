@@ -137,23 +137,36 @@ const policyIdentity = (value: object | undefined): string => {
   return `${identity}`;
 };
 
-const singleFlightKey = (
-  urlHash: string,
-  options: FetchUrlOptions,
-  store: Pick<Deno.Kv, "get" | "set"> | undefined,
-): string => {
+/*
+  The egress policy an article was fetched under, as one comparable string: the self-origin/self-address
+  configuration that decides which targets are this service, and the resolver instance that validates each
+  redirect hop.
+
+  It is part of BOTH identities this module keys on - the in-flight expansion (full-rss-515) and the cached
+  article (full-rss-54i) - for one reason: what is shared here is not just bytes, it is the RESULT of a fetch
+  whose redirect hops were validated against this policy. A caller with a stricter resolver must neither join a
+  laxer caller's expansion nor be served the article that expansion cached, or its policy is bypassed by
+  whichever request happened to arrive first.
+*/
+const policyKey = (options: FetchUrlOptions): string => {
   // `null` is a real state - "this deployment has addresses we could not learn" (full-rss-pxq) - so it is
   // spelled distinctly from "no addresses were supplied at all" rather than collapsed into an empty list.
   const addresses = options.selfAddresses === null
     ? String.fromCharCode(0) + "unknown"
     : (options.selfAddresses ?? []).join(",");
-  // `resolveDns` belongs in the key for the same reason the self addresses do: it is the policy each REDIRECT
-  // hop is validated against, so a caller with a stricter resolver must not be handed an article whose hops
-  // were checked by a laxer one (full-rss-515). `store` is here because the shared run writes to the FIRST
-  // caller's cache - a caller with a different cache must run its own expansion or it could never be cached.
-  return `${urlHash}|${(options.selfOrigins ?? []).join(",")}|${addresses}|` +
-    `${policyIdentity(options.resolveDns)}|${policyIdentity(store)}`;
+  return `${(options.selfOrigins ?? []).join(",")}|${addresses}|` +
+    policyIdentity(options.resolveDns);
 };
+
+/*
+  The in-flight key adds the cache to the policy: the shared run writes to the FIRST caller's store, so a caller
+  with a different cache must run its own expansion or its cache could never be filled.
+*/
+const singleFlightKey = (
+  urlHash: string,
+  options: FetchUrlOptions,
+  store: Pick<Deno.Kv, "get" | "set"> | undefined,
+): string => `${urlHash}|${policyKey(options)}|${policyIdentity(store)}`;
 
 export const fetchContent = async (
   url: string,
@@ -184,7 +197,13 @@ export const fetchContent = async (
     return await inFlight;
   }
 
-  const contentKV = await cache.get([urlHash]);
+  // The cached article is keyed by the policy as well as the URL: the bytes are the product of a fetch whose
+  // redirect hops were validated under THAT policy, so serving them to a caller with a stricter resolver would
+  // hand it content its own policy refuses (full-rss-54i). In a deployment the policy is constant (one
+  // configuration, the default resolver), so this costs nothing there; it is the per-caller resolver of a test
+  // or an embedder that gets its own entries.
+  const cacheKey = [urlHash, policyKey(egressOptions)];
+  const contentKV = await cache.get(cacheKey);
   // Typed with an explicit ArrayBuffer: the value is fed back to `new Response(...)` below, and a
   // Uint8Array over a (possibly shared) ArrayBufferLike is not a valid BodyInit.
   const content = contentKV?.value as Uint8Array<ArrayBuffer> | undefined;
@@ -270,7 +289,7 @@ export const fetchContent = async (
 
     // Cache failures must not lose an otherwise successfully converted article or become unhandled rejections.
     try {
-      await cache.set([urlHash], concatenated, {
+      await cache.set(cacheKey, concatenated, {
         expireIn: 60 * 1000, // 60 seconds
       });
     } catch (e) {

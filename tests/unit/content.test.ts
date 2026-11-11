@@ -511,3 +511,62 @@ Deno.test("callers with different DNS policies do not share one expansion", asyn
     globalThis.fetch = originalFetch;
   }
 });
+
+Deno.test("a cached article is not served across egress policies", async () => {
+  // The in-flight fix covered concurrent callers; the CACHE was still keyed by the URL alone, so a lax caller
+  // could fill it and a strict caller was then handed that article without its own redirect policy ever being
+  // consulted (full-rss-54i, found reviewing full-rss-515). The bytes in the cache are the product of a fetch
+  // whose hops were validated under the policy that fetched them, so the policy is part of the cache key.
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    fetches++;
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("first.test")) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://second.test/article" },
+      });
+    }
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  // A real store: it returns what was written, so the second call is a genuine cache hit.
+  const entries = new Map<string, Uint8Array<ArrayBuffer>>();
+  const store = {
+    get: (key: Deno.KvKey[]) =>
+      Promise.resolve({ value: entries.get(key.join("|")) ?? null }),
+    set: (key: Deno.KvKey[], value: Uint8Array<ArrayBuffer>) => {
+      entries.set(key.join("|"), value);
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  const url = "https://first.test/article";
+  const permissive = { resolveDns: () => Promise.resolve(["8.8.8.8"]) };
+  const strict = {
+    resolveDns: (host: string) =>
+      Promise.resolve([host === "second.test" ? "127.0.0.1" : "8.8.8.8"]),
+  };
+  try {
+    const lax = await fetchContent(url, undefined, store, permissive);
+    assertIncludes(lax, "Hello world.", "the lax caller gets the article");
+    assertEqual(entries.size, 1, "and caches it");
+    // The same policy reads that entry back: no second fetch.
+    const again = await fetchContent(url, undefined, store, permissive);
+    assertEqual(again, lax, "the permissive caller gets its cached article");
+    const fetchesBeforeStrict = fetches;
+    // A stricter policy must not be served it: its own redirect check refuses the hop.
+    await assertRejects(
+      () => fetchContent(url, undefined, store, strict),
+      "private address",
+      "the strict caller refuses the cached hop it would refuse live",
+    );
+    assertEqual(
+      fetches,
+      fetchesBeforeStrict + 1,
+      "the strict caller ran its own expansion (its first leg) instead of reading the other " +
+        "policy's entry, and the refused hop was never fetched",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
