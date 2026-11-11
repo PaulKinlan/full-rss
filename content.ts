@@ -148,6 +148,21 @@ const policyIdentity = (value: object | undefined): string => {
   laxer caller's expansion nor be served the article that expansion cached, or its policy is bypassed by
   whichever request happened to arrive first.
 */
+/*
+  A restart makes the resolver's identity mean something else: the ordinal above lives in one process, and the
+  cache it is part of does not (`Deno.Kv` persists), so the next process can hand the number 1 to a DIFFERENT
+  resolver and read an article whose hops that other resolver allowed (full-rss-dtc, found reviewing
+  full-rss-54i). A per-process nonce keeps custom-resolver entries readable only by the process that wrote them -
+  the only claim a per-process policy can honestly make - while the default resolver, which is the same thing in
+  every process, keeps its entries shareable across restarts (which is the only configuration a deployment runs).
+*/
+const processNonce = crypto.randomUUID();
+
+const resolverKey = (resolveDns: FetchUrlOptions["resolveDns"]): string =>
+  resolveDns == null
+    ? "default"
+    : `custom:${processNonce}:${policyIdentity(resolveDns)}`;
+
 const policyKey = (options: FetchUrlOptions): string => {
   // `null` is a real state - "this deployment has addresses we could not learn" (full-rss-pxq) - so it is
   // spelled distinctly from "no addresses were supplied at all" rather than collapsed into an empty list.
@@ -155,7 +170,7 @@ const policyKey = (options: FetchUrlOptions): string => {
     ? String.fromCharCode(0) + "unknown"
     : (options.selfAddresses ?? []).join(",");
   return `${(options.selfOrigins ?? []).join(",")}|${addresses}|` +
-    policyIdentity(options.resolveDns);
+    resolverKey(options.resolveDns);
 };
 
 /*

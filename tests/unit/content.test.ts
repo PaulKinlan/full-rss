@@ -570,3 +570,56 @@ Deno.test("a cached article is not served across egress policies", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+Deno.test("a restart does not let a new process read an old resolver's cache", async () => {
+  // The resolver's identity is an ordinal that only means anything inside one process, while the cache it takes
+  // part in (`Deno.Kv`) survives a restart. Two module instances stand in for two processes - Deno treats the
+  // query string as a different module - so the second instance assigns its ordinal 1 to a DIFFERENT resolver,
+  // exactly as a fresh process would (full-rss-dtc, found reviewing full-rss-54i).
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("first.test")) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://second.test/article" },
+      });
+    }
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  const entries = new Map<string, Uint8Array<ArrayBuffer>>();
+  const sharedStore = {
+    get: (key: Deno.KvKey[]) =>
+      Promise.resolve({ value: entries.get(key.join("|")) ?? null }),
+    set: (key: Deno.KvKey[], value: Uint8Array<ArrayBuffer>) => {
+      entries.set(key.join("|"), value);
+      return Promise.resolve({ ok: true });
+    },
+  } as unknown as Pick<Deno.Kv, "get" | "set">;
+  const url = "https://first.test/article";
+  const permissive = { resolveDns: () => Promise.resolve(["8.8.8.8"]) };
+  const strict = {
+    resolveDns: (host: string) =>
+      Promise.resolve([host === "second.test" ? "127.0.0.1" : "8.8.8.8"]),
+  };
+  try {
+    const beforeRestart = await import("../../content.ts");
+    const lax = await beforeRestart.fetchContent(
+      url,
+      undefined,
+      sharedStore,
+      permissive,
+    );
+    assertIncludes(lax, "Hello world.", "the lax process caches the article");
+    assertEqual(entries.size, 1, "and leaves it in the persistent cache");
+    // The "new process": same persisted cache, a brand-new module instance.
+    const afterRestart = await import("../../content.ts?restart=1");
+    await assertRejects(
+      () => afterRestart.fetchContent(url, undefined, sharedStore, strict),
+      "private address",
+      "the new process applies its own resolver instead of reading the old entry",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
