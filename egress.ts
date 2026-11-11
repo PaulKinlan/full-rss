@@ -443,8 +443,14 @@ const refuseUnverifiableSelfLiteral = (
 
 /**
  * Resolve this service's own configured hosts to addresses, so the guard can also refuse a target that spells
- * this service as its own IP literal. Best effort by design - a lookup that fails leaves the host comparison,
- * which is still correct, in place (and the residual is recorded in THREAT_MODEL.md).
+ * this service as its own IP literal. The result is the deployment's addresses, or `null` when they could not
+ * be determined IN FULL (full-rss-0b2): any configured hostname whose lookup fails, returns nothing, or has no
+ * resolver to run makes the WHOLE answer `null`, because a partial answer is indistinguishable from a complete
+ * one at the caller - and the host that failed is exactly the one whose IP-literal spelling would go unguarded
+ * while the rest looked safe. That is the same shape one level down as the total-failure rule
+ * (full-rss-pxq), and the caller handles it the same way: IP-literal targets are refused until the lookup
+ * succeeds, which the cache retries on the short TTL. A configured literal needs no lookup and is always
+ * known; a hostname is deliberately NOT judged by what it resolves to (full-rss-og0).
  *
  * Why the answers are not compared against a TARGET's answers. An address is not an identity behind a shared
  * front: services hosted behind one CDN or reverse proxy (Cloudflare, Deno Deploy's edge, Vercel) share public
@@ -456,31 +462,49 @@ const refuseUnverifiableSelfLiteral = (
 export const resolveSelfAddresses = async (
   origins: readonly string[],
   resolveDns?: ResolveDns,
-): Promise<string[]> => {
+): Promise<string[] | null> => {
   const resolver = resolveDns ??
     (netPermissionGranted() ? resolveForValidation : undefined);
   const addresses: string[] = [];
+  let complete = true;
   for (const origin of origins) {
     let hostname: string;
     try {
       hostname = new URL(origin).hostname.replace(/^\[|\]$/g, "");
     } catch {
+      complete = false;
       continue;
     }
-    if (hostname === "") continue;
+    if (hostname === "") {
+      complete = false;
+      continue;
+    }
     // A configured literal needs no lookup: it is its own address.
     if (addressKey(hostname) != null) {
       addresses.push(hostname);
       continue;
     }
-    if (resolver == null) continue;
-    try {
-      addresses.push(...await resolver(hostname));
-    } catch {
-      // Unresolved: degrade to the host comparison rather than failing requests.
+    if (resolver == null) {
+      complete = false;
+      continue;
     }
+    let answers: string[];
+    try {
+      answers = await resolver(hostname);
+    } catch {
+      // Unresolved: the set is unknown, not partial (full-rss-0b2).
+      complete = false;
+      continue;
+    }
+    if (answers.length === 0) {
+      // A name that answers with no records is not a known address either: "our host has no A/AAAA" is a
+      // misconfiguration this deployment must not paper over by guarding only its siblings (full-rss-0b2).
+      complete = false;
+      continue;
+    }
+    addresses.push(...answers);
   }
-  return addresses;
+  return complete ? addresses : null;
 };
 
 /**
@@ -763,8 +787,108 @@ export const MAX_LOG_SCAN = 4 * MAX_LOG_CHARS;
 const endsAuthority = (value: string, index: number): boolean =>
   value[index] === "/" || value.charCodeAt(index) <= 0x20;
 
+/** A scheme token starts with a letter: WHATWG's scheme grammar is `[a-zA-Z][a-zA-Z0-9+.-]*`. */
+const isSchemeStart = (code: number): boolean =>
+  (code >= 97 && code <= 122) || (code >= 65 && code <= 90);
+
+const isSchemeChar = (code: number): boolean =>
+  isSchemeStart(code) ||
+  (code >= 48 && code <= 57) ||
+  code === 43 ||
+  code === 45 ||
+  code === 46;
+
+/** '/' and '\\': each can follow a scheme's colon and open an authority, alone or in a mixed run. */
+const isAuthoritySlash = (code: number): boolean => code === 47 || code === 92;
+
 /**
- * Mask the userinfo of every absolute URL in `value` (`user:password@host` becomes `***@host`).
+ * The six WHATWG special schemes (lowercase, compared ASCII case-insensitively - `value.charCodeAt(c) | 0x20`
+ * lowercases a letter and leaves every other scheme character unchanged). Only these parse an authority out
+ * of the text directly after their colon, with no slash at all: `http:user:pass@host/x` is a validation
+ * error that still yields username `user`, password `secret`, host `evil.example` (full-rss-xv3). A
+ * non-special scheme needs the `//` - `term:Monday@noon` has a path, and no userinfo, without it.
+ */
+const SPECIAL_SCHEMES = ["http", "https", "ws", "wss", "ftp", "file"];
+
+const isSpecialScheme = (value: string, from: number, to: number): boolean => {
+  for (const scheme of SPECIAL_SCHEMES) {
+    if (to - from !== scheme.length) continue;
+    let same = true;
+    for (let at = from; at < to; at++) {
+      if ((value.charCodeAt(at) | 0x20) !== scheme.charCodeAt(at - from)) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return true;
+  }
+  return false;
+};
+
+/**
+ * Where the next authority of `value` begins: just past a slash run that either follows a scheme token and
+ * its colon, or stands scheme-relative - or, for a special scheme and no slash at all, right after the
+ * colon. WHATWG gives a special scheme's authority to ANY run of `/` and `\\` after the colon -
+ * `http:\\user:pass@host/x` and even `http:/u@host` parse with that authority - and those six schemes fall
+ * into the authority state on any character, so `http:user:pass@host/x` carries that userinfo too
+ * (full-rss-xv3); a non-special scheme needs the `//`, so `term:Monday@noon` never anchors. A scheme-
+ * relative reference (`//user:pass@host/x`) carries userinfo with no scheme at all (full-rss-1xy).
+ * A standalone run needs two or more slashes and must not follow `/`, `\\` or `:`, so the `//` of `scheme://`
+ * (found through its colon a moment earlier) and the doubled slashes a path can start with do not turn an
+ * `@` that a URL parser would call path into userinfo here. The scheme token must start with a letter, so
+ * timestamps and ratios (`10:30/45`, `2026-11-09T04:01:22`) never anchor one.
+ *
+ * Linear and forward-only like the scan it serves (full-rss-9ey): `i` only moves forward, and the backward
+ * walk over a scheme token visits each character at most once - a token ends at the first character outside
+ * the scheme set, and a colon can end only the one token before it.
+ */
+const nextAuthorityStart = (value: string, from: number): number => {
+  let i = from;
+  while (i < value.length) {
+    const code = value.charCodeAt(i);
+    if (code === 58 /* ':' */) {
+      let tokenAt = i;
+      while (tokenAt > 0 && isSchemeChar(value.charCodeAt(tokenAt - 1))) {
+        tokenAt--;
+      }
+      if (tokenAt < i && isSchemeStart(value.charCodeAt(tokenAt))) {
+        let run = i + 1;
+        while (run < value.length && isAuthoritySlash(value.charCodeAt(run))) {
+          run++;
+        }
+        // Zero slashes anchor only for a special scheme: WHATWG's parser reaches the authority state from
+        // those six no matter what follows the colon, while any other scheme reads the text as a path
+        // (full-rss-xv3). The check runs only on this path, so the common `://` shape pays nothing.
+        if (
+          run > i + 1 ||
+          (run === i + 1 && isSpecialScheme(value, tokenAt, i))
+        ) {
+          return run;
+        }
+      }
+      i++;
+    } else if (isAuthoritySlash(code)) {
+      const before = i > 0 ? value.charCodeAt(i - 1) : 0;
+      if (before !== 47 && before !== 92 && before !== 58) {
+        let run = i;
+        while (run < value.length && isAuthoritySlash(value.charCodeAt(run))) {
+          run++;
+        }
+        if (run - i >= 2) return run;
+        i = run;
+      } else {
+        i++;
+      }
+    } else {
+      i++;
+    }
+  }
+  return -1;
+};
+
+/**
+ * Mask the userinfo of every absolute or scheme-relative URL in `value` (`user:password@host` becomes
+ * `***@host`).
  *
  * One forward scan, and deliberately not a regular expression. The pattern that used to do this
  * (`([a-z][a-z0-9+.-]*:\/\/)([^/@\s:]+):?[^@/\s]*@`) has to find a literal '@' to match at all, so on a value
@@ -782,18 +906,23 @@ const endsAuthority = (value: string, index: number): boolean =>
  * `windowed` says the caller already cut the value at MAX_LOG_SCAN, so an authority that runs to the end of
  * the value may be missing the '@' that terminates it. That case fails CLOSED: the whole visible authority
  * is masked, because the alternative is emitting a password prefix we could not see the end of.
+ *
+ * The authority is anchored on WHATWG's spellings, not just `://` (full-rss-1xy): a special scheme reads any
+ * run of `/` and `\\` after its colon as the delimiter (`http:\\user:pass@host/x` parses with that userinfo,
+ * so does `http:/u@host`), and with no slash at all for those six schemes (`http:u@host`, full-rss-xv3),
+ * while a scheme-relative reference (`//user:pass@host/x`) carries userinfo with no
+ * scheme at all. `nextAuthorityStart` finds each of those; everything after the anchor works as before.
  */
 const maskUserinfo = (value: string, windowed: boolean): string => {
-  // `copyFrom` is how much of the value is already in `masked`; `searchFrom` is where the next "://" search
-  // starts. They differ whenever an authority is scanned and found clean: the scan moves past it, the copy
+  // `copyFrom` is how much of the value is already in `masked`; `searchFrom` is where the next authority
+  // search starts. They differ whenever an authority is scanned and found clean: the scan moves past it, the copy
   // does not. Both only ever move forward.
   let masked = "";
   let copyFrom = 0;
   let searchFrom = 0;
   for (;;) {
-    const schemeAt = value.indexOf("://", searchFrom);
-    if (schemeAt < 0) break;
-    const authorityStart = schemeAt + 3;
+    const authorityStart = nextAuthorityStart(value, searchFrom);
+    if (authorityStart < 0) break;
     let authorityEnd = authorityStart;
     while (authorityEnd < value.length && !endsAuthority(value, authorityEnd)) {
       authorityEnd++;

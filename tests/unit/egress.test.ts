@@ -23,6 +23,7 @@ import {
   parseSelfHosts,
   readCappedStream,
   readCappedText,
+  type ResolveDns,
   resolveSelfAddresses,
   sanitizeForLog,
 } from "../../egress.ts";
@@ -930,8 +931,10 @@ Deno.test("self hosts come from configuration, parsed strictly", () => {
 });
 
 Deno.test("resolveSelfAddresses uses a literal as its own address and resolves a name", async () => {
+  // `?.join()` so a null (unknown) answer fails the equality instead of the type check: these two shapes must
+  // be known, and the tests below pin what makes a set unknown.
   assertEqual(
-    (await resolveSelfAddresses(["http://93.184.216.34"])).join(),
+    (await resolveSelfAddresses(["http://93.184.216.34"]))?.join(),
     "93.184.216.34",
     "a configured literal needs no lookup",
   );
@@ -939,18 +942,68 @@ Deno.test("resolveSelfAddresses uses a literal as its own address and resolves a
     (await resolveSelfAddresses(
       ["https://service.test"],
       resolver(["93.184.216.34"]),
-    )).join(),
+    ))?.join(),
     "93.184.216.34",
     "a configured name is resolved through the injected resolver",
   );
-  // A lookup that fails leaves the host comparison in place rather than failing every request.
+  // A lookup that fails makes the whole set unknown rather than answering with the rest (full-rss-0b2).
   assertEqual(
-    (await resolveSelfAddresses(
+    await resolveSelfAddresses(
       ["https://gone.test"],
       () => Promise.reject(new Error("NXDOMAIN")),
-    )).length,
-    0,
-    "a failed lookup degrades to the host comparison",
+    ),
+    null,
+    "a failed lookup is an unknown, not a partial answer",
+  );
+  // No configured hosts at all is complete knowledge - of nothing.
+  assertEqual(
+    (await resolveSelfAddresses([]))?.join(),
+    "",
+    "no origins configured is an empty, complete answer",
+  );
+});
+
+Deno.test("a partial self-address resolution is an unknown, not a partial answer", async () => {
+  // Regression (full-rss-0b2): with two configured hosts and a transient DNS failure on one, the old code
+  // returned the surviving host's address alone. The caller cannot tell that from a complete answer, so the
+  // failing host's own IP-literal spelling went unguarded for the whole cache TTL - the reviewer's driver
+  // reproduced it as PARTIAL/ALLOW. The bead's exact repro shape, as a unit test:
+  const stub: ResolveDns = (hostname) =>
+    hostname === "good.example"
+      ? Promise.resolve(["93.184.216.34"])
+      : Promise.reject(new Error("SERVFAIL"));
+  assertEqual(
+    await resolveSelfAddresses(
+      ["https://good.example", "https://bad.example"],
+      stub,
+    ),
+    null,
+    "one failing host among several makes the whole set unknown",
+  );
+  // A configured literal is always known without a lookup, but it does not make a failed sibling complete:
+  // the set is only usable when EVERY configured host is known.
+  assertEqual(
+    await resolveSelfAddresses(
+      ["http://93.184.216.34", "https://bad.example"],
+      stub,
+    ),
+    null,
+    "a known literal next to a failing name is still an unknown set",
+  );
+  assertEqual(
+    (await resolveSelfAddresses(["https://good.example"], stub))?.join(),
+    "93.184.216.34",
+    "every host resolved is a complete answer",
+  );
+});
+
+Deno.test("a self host that resolves to no records is an unknown, not a known-empty answer", async () => {
+  // NODATA on our own name is a misconfiguration, not knowledge: an answer of zero records leaves this
+  // deployment's address unknown, so the set is null and the literal guard fails closed (full-rss-0b2).
+  assertEqual(
+    await resolveSelfAddresses(["https://empty.test"], resolver([])),
+    null,
+    "a name that answers with no records is not a known address",
   );
 });
 
@@ -1272,6 +1325,89 @@ Deno.test("an '@' in the path is not userinfo and is left alone", () => {
     sanitizeForLog("https://example.com/@user/profile"),
     "https://example.com/@user/profile",
     "a path '@' is not masked (the authority ended at the first '/')",
+  );
+});
+
+Deno.test("userinfo is masked in WHATWG's other authority spellings, not just '://'", () => {
+  // Regression (full-rss-1xy): the anchor was a literal '://', so credentials behind the other spellings a
+  // WHATWG parser accepts reached logs verbatim. A special scheme reads ANY run of '/' and '\' after its
+  // colon as the authority delimiter - or none at all (full-rss-xv3) - and a scheme-relative reference
+  // carries userinfo with no scheme.
+  assertEqual(
+    sanitizeForLog("http:user:secret@evil.example/x"),
+    "http:***@evil.example/x",
+    "a special scheme needs no slash: the colon alone opens the authority",
+  );
+  assertEqual(
+    sanitizeForLog("ws:user:secret@evil.example/x"),
+    "ws:***@evil.example/x",
+    "every special scheme, not only http",
+  );
+  assertEqual(
+    sanitizeForLog("HTTP:USER:SECRET@EVIL.EXAMPLE/X"),
+    "HTTP:***@EVIL.EXAMPLE/X",
+    "schemes are ASCII case-insensitive",
+  );
+  assertEqual(
+    sanitizeForLog("http:\\user:secret@evil.example/x"),
+    "http:\\***@evil.example/x",
+    "a backslash after the scheme opens the authority too",
+  );
+  assertEqual(
+    sanitizeForLog("http:\\\\user:secret@evil.example/x"),
+    "http:\\\\***@evil.example/x",
+    "doubled backslashes, which a WHATWG parser normalises the same way",
+  );
+  assertEqual(
+    sanitizeForLog("http:/user:secret@evil.example/x"),
+    "http:/***@evil.example/x",
+    "a single slash after a special scheme still parses to an authority",
+  );
+  assertEqual(
+    sanitizeForLog("//user:secret@evil.example/x"),
+    "//***@evil.example/x",
+    "scheme-relative reference",
+  );
+  assertEqual(
+    sanitizeForLog("Invalid URL //user:secret@evil.example given"),
+    "Invalid URL //***@evil.example given",
+    "scheme-relative reference inside an error message",
+  );
+});
+
+Deno.test("colon-and-slash text that is not an authority is left alone", () => {
+  // The anchor needs a scheme token (WHATWG's grammar: a letter, then letters/digits/+/-/.), so timestamps
+  // and ratios never mask, and a Windows path without an '@' has nothing to mask.
+  assertEqual(
+    sanitizeForLog("retried 10:30/45 at 2026-11-09T04:01:22"),
+    "retried 10:30/45 at 2026-11-09T04:01:22",
+    "timestamps and ratios are not an authority",
+  );
+  assertEqual(
+    sanitizeForLog("scanning C:\\Users\\name\\notes"),
+    "scanning C:\\Users\\name\\notes",
+    "a Windows path without an '@' is untouched",
+  );
+  assertEqual(
+    sanitizeForLog("http: rejected user@host"),
+    "http: rejected user@host",
+    "a special-scheme colon before prose is not an authority: the space ends it before any '@'",
+  );
+  assertEqual(
+    sanitizeForLog("term:Monday@noon"),
+    "term:Monday@noon",
+    "a non-special scheme has no authority without '//'",
+  );
+});
+
+Deno.test("a doubled slash inside a path masks liberally rather than leaking", () => {
+  // The scheme-relative anchor cannot tell a path's '//' from a reference's '//' without parsing, and
+  // masking one thing too many is the safe direction (the maskUserinfo docblock): a path '//b@cdn' is
+  // masked even though a URL parser would call it path.
+  assertEqual(
+    sanitizeForLog("https://example.com/a//b@cdn/x"),
+    "https://example.com/a//***@cdn/x",
+    "a path '@' after a '//' is over-masked, never logged",
   );
 });
 
