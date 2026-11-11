@@ -519,16 +519,18 @@ Deno.test("a cached article is not served across egress policies", async () => {
   // whose hops were validated under the policy that fetched them, so the policy is part of the cache key.
   const originalFetch = globalThis.fetch;
   let fetches = 0;
-  globalThis.fetch = (async (input: string | URL | Request) => {
+  globalThis.fetch = ((input: string | URL | Request) => {
     fetches++;
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("first.test")) {
-      return new Response(null, {
-        status: 302,
-        headers: { location: "https://second.test/article" },
-      });
+      return Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://second.test/article" },
+        }),
+      );
     }
-    return new Response(PAGE);
+    return Promise.resolve(new Response(PAGE));
   }) as typeof globalThis.fetch;
   // A real store: it returns what was written, so the second call is a genuine cache hit.
   const entries = new Map<string, Uint8Array<ArrayBuffer>>();
@@ -577,15 +579,17 @@ Deno.test("a restart does not let a new process read an old resolver's cache", a
   // query string as a different module - so the second instance assigns its ordinal 1 to a DIFFERENT resolver,
   // exactly as a fresh process would (full-rss-dtc, found reviewing full-rss-54i).
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: string | URL | Request) => {
+  globalThis.fetch = ((input: string | URL | Request) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("first.test")) {
-      return new Response(null, {
-        status: 302,
-        headers: { location: "https://second.test/article" },
-      });
+      return Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://second.test/article" },
+        }),
+      );
     }
-    return new Response(PAGE);
+    return Promise.resolve(new Response(PAGE));
   }) as typeof globalThis.fetch;
   const entries = new Map<string, Uint8Array<ArrayBuffer>>();
   const sharedStore = {
