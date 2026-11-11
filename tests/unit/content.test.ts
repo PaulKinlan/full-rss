@@ -446,3 +446,68 @@ Deno.test("callers that both miss the cache still coalesce", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+Deno.test("callers with different DNS policies do not share one expansion", async () => {
+  // The resolver is part of the egress policy: it is what each redirect hop is validated against. Sharing one
+  // fetch between a lax caller and a strict one handed the strict caller an article fetched through a hop its
+  // own policy refuses (full-rss-515, found reviewing full-rss-ca7): here the article redirects to a host the
+  // strict resolver maps to loopback.
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    fetches++;
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("first.test")) {
+      await held;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://second.test/article" },
+      });
+    }
+    return new Response(PAGE);
+  }) as typeof globalThis.fetch;
+  const writes = { count: 0 };
+  const store = countingStore(writes);
+  const url = "https://first.test/article";
+  const permissive = { resolveDns: () => Promise.resolve(["8.8.8.8"]) };
+  const strict = {
+    resolveDns: (host: string) =>
+      Promise.resolve([host === "second.test" ? "127.0.0.1" : "8.8.8.8"]),
+  };
+  try {
+    const laxCall = fetchContent(url, undefined, store, permissive);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const strictCall = fetchContent(url, undefined, store, strict);
+    release();
+    const [lax, strictResult] = await Promise.allSettled([laxCall, strictCall]);
+    assertEqual(lax.status, "fulfilled", "the permissive caller succeeds");
+    assertEqual(
+      strictResult.status,
+      "rejected",
+      "the strict caller keeps its own redirect policy",
+    );
+    assert(
+      String((strictResult as PromiseRejectedResult).reason).includes(
+        "private address",
+      ),
+      "and refuses the hop its own resolver blocks",
+    );
+    // The same resolver SHARED by two callers is the same policy, so they still coalesce - the key identifies
+    // the resolver instance, it does not disable coalescing whenever one is supplied.
+    const before = fetches;
+    const a = fetchContent(url, undefined, store, permissive);
+    const b = fetchContent(url, undefined, store, permissive);
+    await Promise.all([a, b]);
+    // One expansion is two upstream fetches (the article and its redirect target); two coalesced callers are
+    // still two, and two separate expansions would be four.
+    assertEqual(
+      fetches - before,
+      2,
+      "two callers with the same resolver still share one expansion",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

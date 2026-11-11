@@ -117,16 +117,42 @@ const renderArticle = async (
 */
 const inFlightArticles = new Map<string, Promise<string>>();
 
+/*
+  A stable identity for a policy object, so it can take part in the key below. The egress policy is partly made
+  of functions (`resolveDns`) and of per-caller objects (`store`), which have no useful spelling; a WeakMap gives
+  each INSTANCE a number instead, so the same injected resolver or cache shared by two callers means "same
+  policy" and two different ones do not. Weak, because a policy object is not something this module should keep
+  alive.
+*/
+const policyIdentities = new WeakMap<object, number>();
+let nextPolicyIdentity = 0;
+
+const policyIdentity = (value: object | undefined): string => {
+  if (value == null) return "default";
+  let identity = policyIdentities.get(value);
+  if (identity == null) {
+    identity = ++nextPolicyIdentity;
+    policyIdentities.set(value, identity);
+  }
+  return `${identity}`;
+};
+
 const singleFlightKey = (
   urlHash: string,
   options: FetchUrlOptions,
+  store: Pick<Deno.Kv, "get" | "set"> | undefined,
 ): string => {
   // `null` is a real state - "this deployment has addresses we could not learn" (full-rss-pxq) - so it is
   // spelled distinctly from "no addresses were supplied at all" rather than collapsed into an empty list.
   const addresses = options.selfAddresses === null
     ? String.fromCharCode(0) + "unknown"
     : (options.selfAddresses ?? []).join(",");
-  return `${urlHash}|${(options.selfOrigins ?? []).join(",")}|${addresses}`;
+  // `resolveDns` belongs in the key for the same reason the self addresses do: it is the policy each REDIRECT
+  // hop is validated against, so a caller with a stricter resolver must not be handed an article whose hops
+  // were checked by a laxer one (full-rss-515). `store` is here because the shared run writes to the FIRST
+  // caller's cache - a caller with a different cache must run its own expansion or it could never be cached.
+  return `${urlHash}|${(options.selfOrigins ?? []).join(",")}|${addresses}|` +
+    `${policyIdentity(options.resolveDns)}|${policyIdentity(store)}`;
 };
 
 export const fetchContent = async (
@@ -152,7 +178,7 @@ export const fetchContent = async (
 
   // Join an expansion that is already running for this article before touching the cache: the caller waits for
   // the work instead of repeating it, and gets exactly the document the first caller gets.
-  const flightKey = singleFlightKey(urlHash, egressOptions);
+  const flightKey = singleFlightKey(urlHash, egressOptions, store);
   const inFlight = inFlightArticles.get(flightKey);
   if (inFlight != null) {
     return await inFlight;
