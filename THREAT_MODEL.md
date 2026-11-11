@@ -144,7 +144,15 @@ kilobytes of it can expand to gigabytes (a decompression bomb), so `content.ts`
 pipes its `DecompressionStream` through the same 5 MB cap rather than calling
 `.text()` on it.
 
-### `sanitizeForLog`
+### `sanitizeForLog` (`log-sanitize.ts`)
+
+The sanitizer lives in `log-sanitize.ts`, not in `egress.ts` (`full-rss-had`):
+it is a pure string transform with no policy and no I/O, and keeping it beside
+the network policy meant a sanitizer change - four of fifteen egress landings in
+one month - competed for the same file and the same suite as DNS, address and
+redirect work. Its public surface and limits are unchanged by the move, and
+`egress.ts` does not re-export it, so an import of `sanitizeForLog` names the
+module that owns it.
 
 Attacker-controlled URLs and error strings are stripped of control characters
 and of U+2028/U+2029 (line/paragraph separators that forge log entries for a

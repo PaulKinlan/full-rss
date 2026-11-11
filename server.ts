@@ -18,8 +18,8 @@ import {
   parseSelfHosts,
   readCappedText,
   resolveSelfAddresses,
-  sanitizeForLog,
 } from "./egress.ts";
+import { sanitizeForLog } from "./log-sanitize.ts";
 
 // The most feed document we will read, decompressed. A feed that arrives larger than this is refused
 // rather than buffered and parsed (full-rss-apm).

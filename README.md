@@ -98,6 +98,7 @@ with another:
 | `main.ts`            | the entrypoint Deno Deploy runs; boot only                                |
 | `server.ts`          | HTTP routing, status codes and the socket (`serve()`)                     |
 | `egress.ts`          | every outbound fetch: target validation, redirects, caps (`guardedFetch`) |
+| `log-sanitize.ts`    | attacker-controlled text made safe to log (`sanitizeForLog`)              |
 | `feed.ts`            | a parsed feed to the RSS 2.0 document (`exportFeed`, `processFeed`)       |
 | `content.ts`         | article fetch, HTML to markdown, gzipped KV cache (`fetchContent`)        |
 | `templates/index.ts` | the HTML landing/error page                                               |

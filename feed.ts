@@ -11,7 +11,8 @@ import { Rss } from "@feed/feed";
 import { Feed } from "@mikaelporttila/rss";
 import sanitizeHtml from "sanitize-html";
 import { fetchContent } from "./content.ts";
-import { type FetchUrlOptions, sanitizeForLog } from "./egress.ts";
+import { type FetchUrlOptions } from "./egress.ts";
+import { sanitizeForLog } from "./log-sanitize.ts";
 
 /*
   Feed-supplied markup is untrusted input on its way to a reader: an item whose article expansion was
