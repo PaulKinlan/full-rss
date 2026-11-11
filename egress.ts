@@ -122,8 +122,9 @@ const parseIPv6 = (host: string): number[] | null => {
 
 const ipv6ToV4 = (groups: number[]): bigint | null => {
   // The embedded IPv4 of a mapped (::ffff:0:0/96), translated (::ffff:0:0:0/96), compatible (::x.y.z.w,
-  // deprecated but parsed), NAT64 (64:ff9b::/96), 6to4 (2002::/16) or Teredo (2001::/32) address, as one
-  // 32-bit value.
+  // deprecated but parsed), NAT64 well-known prefix (64:ff9b::/96), 6to4 (2002::/16) or Teredo (2001::/32)
+  // address, as one 32-bit value. Each form is matched on its WHOLE prefix, never on a recognisable start: a
+  // host is only called "the same address" when the whole encoding says so (full-rss-96r).
   const tail = (groups[6] ?? 0) * 65536 + (groups[7] ?? 0);
   if (
     groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff
@@ -141,8 +142,17 @@ const ipv6ToV4 = (groups: number[]): bigint | null => {
   if (groups.slice(0, 6).every((group) => group === 0) && tail !== 0) {
     return BigInt(tail); // IPv4-compatible
   }
-  if (groups[0] === 0x64 && groups[1] === 0xff9b) {
-    return BigInt(tail); // NAT64
+  if (
+    groups[0] === 0x64 && groups[1] === 0xff9b &&
+    groups.slice(2, 6).every((group) => group === 0)
+  ) {
+    // NAT64, WELL-KNOWN PREFIX ONLY: 64:ff9b::/96 is exactly the first six groups being 0x64, 0xff9b and four
+    // zeros, with the IPv4 address in the last 32 bits (RFC 6052). Matching only the first two groups also
+    // caught 64:ff9b:1::/48 - RFC 8215's LOCAL-USE prefix, a different /48 with an operator-chosen suffix -
+    // and read its low 32 bits as an IPv4 address, which conflated an unrelated IPv6 host with whatever IPv4
+    // those bits happened to spell (full-rss-96r, found reviewing full-rss-2so). The local-use prefix is not
+    // read as IPv4 at all here: its suffix layout is not fixed by the RFC, so there is no address to claim.
+    return BigInt(tail);
   }
   if (groups[0] === 0x2002) {
     return BigInt(groups[1] * 65536 + groups[2]); // 6to4
@@ -269,7 +279,17 @@ export type FetchUrlOptions = {
   resolveDns?: ResolveDns;
   signal?: AbortSignal;
   selfOrigins?: readonly string[];
-  selfAddresses?: readonly string[];
+  /**
+   * The addresses `selfOrigins` resolve to, so that this service spelled as its own IP literal is refused too
+   * (full-rss-647). Three states, and the difference between them is deliberate:
+   *
+   *   - an array: this deployment's own addresses, compared by value;
+   *   - `null`: this deployment has addresses but they could not be determined right now, so an IP-literal
+   *     target cannot be ruled out as this service and is refused - fail closed (full-rss-pxq);
+   *   - omitted: the caller is not supplying self-identity at all (a bare utility call), so no literal
+   *     comparison happens. server.ts always passes one of the first two.
+   */
+  selfAddresses?: readonly string[] | null;
 };
 
 /**
@@ -366,17 +386,29 @@ export const parseSelfHosts = (raw: string | undefined): string[] => {
 /**
  * A canonical key for an address literal, so two spellings of one address compare equal (and so an address can
  * never be confused with a name). Returns null for anything that is not an IP literal.
+ *
+ * A v6 spelling whose low bits ARE an IPv4 address is keyed as that IPv4, because it is that host seen through a
+ * translator: the IPv4-mapped `::ffff:a.b.c.d`, the deprecated translated/compatible forms, NAT64
+ * `64:ff9b::/96`, 6to4 `2002::/16` and Teredo. Without this, `http://[::ffff:93.184.216.34]/` and
+ * `http://[64:ff9b::5db8:d822]/` were neither refused as this service's own address nor blocked by a range, so
+ * one host had two spellings that the self-reference guard could not see (full-rss-2so, found reviewing
+ * full-rss-pxq). It reuses `ipv6ToV4`, the helper the range check already reads these forms through, so the
+ * identity comparison and the blocking comparison can never disagree about what an address carries; that
+ * conservatism is deliberate there too - a 6to4 or Teredo address naming our own IPv4 is refused rather than
+ * followed.
  */
 const addressKey = (raw: string): string | null => {
   const v4 = parseIPv4(raw);
   if (v4 != null) return `v4:${v4}`;
   const v6 = parseIPv6(raw);
-  return v6 == null ? null : `v6:${v6.join(":")}`;
+  if (v6 == null) return null;
+  const embedded = ipv6ToV4(v6);
+  return embedded != null ? `v4:${embedded}` : `v6:${v6.join(":")}`;
 };
 
 /** The addresses this service answers on, as comparable keys. Empty when none are configured. */
 const ownAddressKeys = (
-  addresses: readonly string[] | undefined,
+  addresses: readonly string[] | null | undefined,
 ): Set<string> => {
   const keys = new Set<string>();
   for (const address of addresses ?? []) {
@@ -384,6 +416,29 @@ const ownAddressKeys = (
     if (key != null) keys.add(key);
   }
   return keys;
+};
+
+/**
+ * An IP literal that passed the address policy may still be this service itself, spelled by address instead of
+ * by name - the one spelling the host comparison cannot see (full-rss-647), and the spelling the guard used to
+ * stop checking as soon as the lookup of our own addresses came back empty (full-rss-pxq, the factory finding
+ * tm-self-address-guard-silently-absent). `selfAddresses` is null exactly when this deployment has addresses it
+ * could not learn, and then an unknown identity cannot rule the literal out, so it is refused: failing closed
+ * costs an IP-literal feed for as long as the lookup is down, and the other way round costs the bound on the
+ * whole product.
+ *
+ * A HOSTNAME is never judged this way - only its literal spelling is, because behind a shared CDN an address
+ * match proves nothing about who routes to it (full-rss-og0).
+ */
+const refuseUnverifiableSelfLiteral = (
+  url: URL,
+  options?: FetchUrlOptions,
+): void => {
+  if (options?.selfAddresses === null) {
+    throw new BlockedUrlError(
+      `${url.host} is an IP literal and this deployment's own addresses could not be resolved, so it cannot be ruled out as this service itself`,
+    );
+  }
 };
 
 /**
@@ -477,11 +532,9 @@ export const parseFetchableUrl = async (
   // NOT judged by the addresses it resolves to: behind a shared CDN that would refuse unrelated feeds
   // (full-rss-og0); see resolveSelfAddresses.
   const ownAddresses = ownAddressKeys(options?.selfAddresses);
-  if (ownAddresses.size > 0) {
-    const literal = addressKey(address);
-    if (literal != null && ownAddresses.has(literal)) {
-      throw new BlockedUrlError(`${url.host} is this service's own address`);
-    }
+  const literal = addressKey(address);
+  if (literal != null && ownAddresses.has(literal)) {
+    throw new BlockedUrlError(`${url.host} is this service's own address`);
   }
 
   const asIPv4 = parseIPv4(address);
@@ -491,6 +544,10 @@ export const parseFetchableUrl = async (
         `${address} is a private, reserved or local address`,
       );
     }
+    // Past the range checks this literal is fetchable, so the only thing left that could forbid it is being
+    // this service - which is exactly what cannot be decided when our own addresses are unknown
+    // (full-rss-pxq).
+    refuseUnverifiableSelfLiteral(url, options);
     return url;
   }
 
@@ -501,6 +558,7 @@ export const parseFetchableUrl = async (
         `${address} is a private, reserved or local address`,
       );
     }
+    refuseUnverifiableSelfLiteral(url, options);
     return url;
   }
 

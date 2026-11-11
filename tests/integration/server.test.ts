@@ -58,17 +58,10 @@ async function withStubbedFetch(
 const get = (query = ""): Promise<Response> =>
   handleRequest(new Request(`http://localhost/${query}`));
 
-const assertHtmlHeaders = (res: Response): void => {
-  assertEqual(
-    res.headers.get("content-type"),
-    "text/html; charset=utf-8",
-    "HTML content type",
-  );
-  assertEqual(
-    res.headers.get("content-security-policy"),
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-    "restrictive CSP with working local form and inline style",
-  );
+// The part of the policy every response carries, whatever the body is: a page, the feed, or the plain-text
+// method rejection (full-rss-cl4). Asserted separately from the content type so each response can say what
+// its own body is without restating the invariant.
+const assertHardenedHeaders = (res: Response): void => {
   assertEqual(
     res.headers.get("x-content-type-options"),
     "nosniff",
@@ -82,12 +75,39 @@ const assertHtmlHeaders = (res: Response): void => {
   );
 };
 
+const assertHtmlHeaders = (res: Response): void => {
+  assertEqual(
+    res.headers.get("content-type"),
+    "text/html; charset=utf-8",
+    "HTML content type",
+  );
+  assertEqual(
+    res.headers.get("content-security-policy"),
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "restrictive CSP with working local form and inline style",
+  );
+  assertHardenedHeaders(res);
+};
+
 Deno.test("a non-GET request is refused with 405", async () => {
   const res = await handleRequest(
     new Request("http://localhost/", { method: "POST" }),
   );
   assertEqual(res.status, 405, "status");
   assertEqual(await res.text(), "Method not allowed", "body");
+  // The rejection is a line of text, not a page, so it names its own content type - and, because it still
+  // leaves this origin, it carries the same hardened policy as every other response (full-rss-cl4).
+  assertEqual(
+    res.headers.get("content-type"),
+    "text/plain; charset=utf-8",
+    "plain-text content type",
+  );
+  assertIncludes(
+    res.headers.get("content-security-policy") ?? "",
+    "default-src 'none'",
+    "the rejection carries the CSP too",
+  );
+  assertHardenedHeaders(res);
 });
 
 Deno.test("no url renders the index page", async () => {
@@ -133,6 +153,31 @@ Deno.test("a url aimed at a private or local target is refused with 403", async 
       "the warning message",
     );
   }
+});
+
+Deno.test("an IP literal is refused when the service cannot resolve its own addresses", async () => {
+  // The wiring half of full-rss-pxq: egress.ts refuses an IP literal when `selfAddresses` is null, and this
+  // suite runs without net permission, so the server's own lookup comes back empty and must pass null rather
+  // than an empty array - otherwise the literal guard is silently absent in exactly the deployments that need
+  // it. Nothing may be fetched: the refusal happens while parsing the target.
+  let fetches = 0;
+  await withStubbedFetch(
+    () => {
+      fetches++;
+      return new Response("unexpected", { status: 200 });
+    },
+    async () => {
+      const res = await get("?url=http%3A%2F%2F93.184.216.34%2Ffeed.xml");
+      assertEqual(res.status, 403, "status");
+      assertHtmlHeaders(res);
+      assertIncludes(
+        await res.text(),
+        "only public http(s) addresses are supported",
+        "the refusal reaches the requester as a blocked target",
+      );
+      assertEqual(fetches, 0, "the literal was never fetched");
+    },
+  );
 });
 
 Deno.test("a url naming this service's own origin is refused with 403 and never fetched", async () => {

@@ -84,14 +84,22 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   DNS host while `new URL()` preserves the dot — comparing the raw `host` let
   one appended character through (full-rss-pbz). Addresses are compared **by
   value**, so the same service spelled as its own IP literal is refused too
-  (full-rss-647). A target's resolved ADDRESSES are deliberately not compared
-  against ours: behind a shared CDN or reverse proxy (Cloudflare, a Deno Deploy
-  edge, Vercel) thousands of unrelated sites share our address, so that
-  comparison refused every ordinary feed on the same front - a worse failure
-  than the hole it closed (full-rss-og0). An alias hostname pointing at this
-  service is therefore not detected, and is recorded as a residual. The guard
-  also covers the requester's `?url=` and every redirect hop, because
-  `guardedFetch` re-runs this function per hop.
+  (full-rss-647) — and that includes the v6 spellings that _carry_ our IPv4
+  address: IPv4-mapped `::ffff:a.b.c.d`, the deprecated translated/compatible
+  forms, NAT64 `64:ff9b::/96`, 6to4 and Teredo are keyed by the IPv4 they hold,
+  the same helper the range check reads them through, so one host cannot have a
+  spelling the guard cannot see (`full-rss-2so`). So is any IP literal when our
+  own addresses could not be determined, because an unknown identity cannot rule
+  that literal out — the guard fails **closed** rather than quietly checking one
+  spelling less (`full-rss-pxq`; the lookup is retried, and the service logs the
+  degraded mode once per retry window). A target's resolved ADDRESSES are
+  deliberately not compared against ours: behind a shared CDN or reverse proxy
+  (Cloudflare, a Deno Deploy edge, Vercel) thousands of unrelated sites share
+  our address, so that comparison refused every ordinary feed on the same
+  front - a worse failure than the hole it closed (full-rss-og0). An alias
+  hostname pointing at this service is therefore not detected, and is recorded
+  as a residual. The guard also covers the requester's `?url=` and every
+  redirect hop, because `guardedFetch` re-runs this function per hop.
 
 ### DNS validation
 
@@ -168,12 +176,17 @@ text whose end could not be seen.
   TTL would serve an error to every later requester of that URL as if it were
   the article (full-rss-qxz). A non-2xx expansion therefore fails, and the item
   keeps the feed's own summary like any other expansion failure.
-- `feed.ts` sanitizes **feed-supplied** item markup (`content:encoded` and
-  `description`) with the same `sanitize-html` defaults at the single export
-  boundary, so items whose expansion was skipped or fell back cannot carry
-  publisher HTML (scripts, event handlers, `javascript:` URLs, iframes) into a
-  reader. Sanitization is idempotent under a fixed config, so expanded articles
-  pass through unchanged.
+- `feed.ts` sanitizes **feed-supplied** markup with the same `sanitize-html`
+  defaults at the single export boundary: every item's `content:encoded` and
+  `description`, and the channel's own `description` (`full-rss-gab`). The
+  channel blurb is a field readers render as HTML, so a publisher must not be
+  able to carry scripts, event handlers, `javascript:` URLs or iframes into a
+  reader through the channel while the same markup in an item would have been
+  stripped. Titles are **not** run through the sanitizer — on the channel or on
+  an item: a title is a text field, `escapeXml` is what makes it safe, and
+  sanitizing it would corrupt legitimate titles containing angle brackets.
+  Sanitization is idempotent under a fixed config, so expanded articles pass
+  through unchanged.
 - The same boundary **bounds the document's item count** at `MAX_ITEMS` (200,
   full-rss-l66): a feed with tens of thousands of entries may not turn unbounded
   entry count into unbounded per-item sanitization and build work. The bound
@@ -215,9 +228,14 @@ with `default-src 'none'` CSP (one inline style allowed), `nosniff`,
 no-referrer`. The feed itself is served as
 `application/rss+xml` with `default-src 'none'; frame-ancestors 'none'`,
 `nosniff`, `X-Frame-Options: DENY` and `referrer-policy: no-referrer`, so a
-browser that opens the feed directly cannot sniff or frame it either. A
-whole-request 30-second deadline bounds the full feed+articles pipeline and
-renders the retry page on expiry.
+browser that opens the feed directly cannot sniff or frame it either. The same
+policy covers the non-document responses: the `405` method rejection is
+`text/plain` with the HTML policy's `nosniff`, `X-Frame-Options: DENY`,
+`referrer-policy: no-referrer` and CSP, because it is a fixed string this
+service emits rather than something a client can influence (`full-rss-cl4` — it
+was the one bare `Response` with no headers at all). A whole-request 30-second
+deadline bounds the full feed+articles pipeline and renders the retry page on
+expiry.
 
 ## Accepted residuals
 
@@ -261,11 +279,13 @@ Known limits that are accepted deliberately:
    per-request 30-second deadline and the 10-article cap remain the bound. Two
    related residuals, both deliberate: if `FULL_RSS_SELF_HOSTS` is unset the
    service falls back to the request's own origin, which the client chooses, and
-   logs that once; and if this service's own addresses cannot be resolved only
-   the host (and literal-address) comparison applies. Neither is silent in the
-   code, and both are worse than configuration, not equal to it. A misconfigured
-   entry cannot silently become a different host either: `parseSelfHosts`
-   rejects a userinfo, path, query or fragment, so
+   logs that once; and if this service's own addresses cannot be resolved the
+   host comparison still applies and any IP-literal target is **refused** until
+   the lookup succeeds - the literal comparison is the one that cannot be made,
+   so instead of skipping it the guard fails closed (`full-rss-pxq`). Neither is
+   silent in the code, and both are worse than configuration, not equal to it. A
+   misconfigured entry cannot silently become a different host either:
+   `parseSelfHosts` rejects a userinfo, path, query or fragment, so
    `https://service@attacker.example` fails the boot with an error instead of
    configuring the attacker's host (full-rss-56w), and it rejects a non-http(s)
    scheme (`file://host`, `data://host`), which parses to an opaque origin that

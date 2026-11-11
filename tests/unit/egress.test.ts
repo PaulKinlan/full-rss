@@ -713,6 +713,48 @@ Deno.test("this service's own IP literal is refused", async () => {
   );
 });
 
+Deno.test("an IP literal is refused when this deployment's own addresses are unknown", async () => {
+  // `selfAddresses: null` is how the server says "this deployment has addresses, but the lookup did not give
+  // them to me". The old code skipped the literal comparison on an empty answer, so the guard vanished exactly
+  // when it was needed and nothing said so (full-rss-pxq). An unknown identity cannot rule a literal out, so it
+  // is refused - and only the literal spelling, because a hostname still gets every check below it.
+  const options = {
+    resolveDns: resolver(PUBLIC_A),
+    selfOrigins: ["https://service.example"],
+    selfAddresses: null,
+  };
+  await assertRejects(
+    () => parseFetchableUrl("https://93.184.216.34/feed.xml", options),
+    "cannot be ruled out as this service itself",
+    "a public IPv4 literal with our addresses unknown",
+  );
+  await assertRejects(
+    () =>
+      parseFetchableUrl(
+        "http://[2606:2800:220:1:248:1893:25c8:1946]/x",
+        options,
+      ),
+    "cannot be ruled out as this service itself",
+    "a public IPv6 literal with our addresses unknown",
+  );
+  // A hostname is unaffected: it is judged by host and by its resolved addresses, both of which still work.
+  const named = await parseFetchableUrl(
+    "https://example.com/feed.xml",
+    options,
+  );
+  assertEqual(
+    named.href,
+    "https://example.com/feed.xml",
+    "a hostname is still fetchable while our own addresses are unknown",
+  );
+  // And a range-blocked literal keeps its more specific refusal: the address policy comes first.
+  await assertRejects(
+    () => parseFetchableUrl("http://192.168.1.10/feed.xml", options),
+    "private, reserved or local address",
+    "a private literal is still refused for being private",
+  );
+});
+
 Deno.test("a shared CDN address is not an identity: an unrelated feed on our address is fetchable", () => {
   // Regression (full-rss-og0): comparing a target's RESOLVED addresses against ours refused every ordinary
   // feed behind the same CDN or reverse proxy, which is most of them for a hosted deployment. Only the
@@ -751,6 +793,86 @@ Deno.test("a self address is compared by value, not by spelling", async () => {
       }),
     "this service's own address",
     "the uncompressed spelling of our own IPv6 address",
+  );
+});
+
+Deno.test("a v6 spelling of an own IPv4 address is the same address", async () => {
+  // The guard compares addresses BY VALUE, and the same host has more than one spelling: the IPv4-mapped
+  // `::ffff:a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 and the deprecated translated/compatible forms all CARRY the
+  // IPv4 address. Keying those as plain v6 groups gave one host two spellings the self-reference guard could not
+  // match, and no range blocks the public form, so a feed could point at this service by `[::ffff:...]` and be
+  // expanded (full-rss-2so).
+  const options = { selfAddresses: ["93.184.216.34"] };
+  for (
+    const url of [
+      "http://[::ffff:93.184.216.34]/feed.xml", // IPv4-mapped, dotted tail
+      "http://[::ffff:5db8:d822]/feed.xml", // the same mapped address in hex
+      "http://[64:ff9b::5db8:d822]/feed.xml", // NAT64 (well-known prefix)
+      "http://[2002:5db8:d822::1]/feed.xml", // 6to4
+    ]
+  ) {
+    await assertRejects(
+      () => parseFetchableUrl(url, options),
+      "this service's own address",
+      `${url} is an own-address spelling`,
+    );
+  }
+  // The comparison is symmetric: an own address configured as the mapped spelling still matches the plain one.
+  await assertRejects(
+    () =>
+      parseFetchableUrl("http://93.184.216.34/feed.xml", {
+        selfAddresses: ["::ffff:93.184.216.34"],
+      }),
+    "this service's own address",
+    "our own address configured as a mapped literal",
+  );
+  // And one address over is a different host, in either family.
+  for (
+    const url of [
+      "http://[::ffff:93.184.216.35]/feed.xml",
+      "http://[64:ff9b::5db8:d823]/feed.xml",
+    ]
+  ) {
+    const other = await parseFetchableUrl(url, options);
+    assert(other != null, `${url} is a different host and stays fetchable`);
+  }
+});
+
+Deno.test("NAT64's local-use prefix is a different host, not the IPv4 in its tail", async () => {
+  // RFC 6052 puts the IPv4 address in the last 32 bits of the WELL-KNOWN prefix 64:ff9b::/96 only. RFC 8215's
+  // local-use prefix 64:ff9b:1::/48 is a different /48 whose suffix is operator-chosen, so reading its low 32
+  // bits as an IPv4 address conflated an unrelated IPv6 host with whatever those bits spelled - a wildcard that
+  // denied a public host as "this service's own address" (full-rss-96r).
+  const options = { selfAddresses: ["93.184.216.34"] };
+  const localUse = await parseFetchableUrl(
+    "http://[64:ff9b:1:abcd::5db8:d822]/feed.xml",
+    options,
+  );
+  assertEqual(
+    localUse.hostname,
+    "[64:ff9b:1:abcd::5db8:d822]",
+    "the local-use prefix is its own host, not the IPv4 its tail spells",
+  );
+  // The well-known prefix is still read as the address it carries, in both directions of the check.
+  await assertRejects(
+    () => parseFetchableUrl("http://[64:ff9b::5db8:d822]/feed.xml", options),
+    "this service's own address",
+    "the well-known prefix still spells our own address",
+  );
+  await assertRejects(
+    () => parseFetchableUrl("http://[64:ff9b::7f00:1]/feed.xml", options),
+    "private, reserved or local address",
+    "a well-known NAT64 of loopback is still blocked",
+  );
+  // ... and the local-use form of that same tail is not blocked on the strength of it either.
+  const localUseLoopback = await parseFetchableUrl(
+    "http://[64:ff9b:1:abcd::7f00:1]/feed.xml",
+    options,
+  );
+  assertEqual(
+    localUseLoopback.hostname,
+    "[64:ff9b:1:abcd::7f00:1]",
+    "the local-use prefix is not judged by its tail",
   );
 });
 

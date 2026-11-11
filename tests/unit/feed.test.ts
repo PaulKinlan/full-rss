@@ -172,6 +172,40 @@ Deno.test("exportFeed sanitizes feed-supplied content:encoded and description", 
 });
 
 /*
+  The channel is feed-supplied content too (full-rss-gab). Its description is the one channel field a reader
+  may render as HTML - many readers show the channel blurb in an HTML context, and many feeds put markup there
+  - so it has to pass the same export-boundary sanitisation an item's description passes. Before this, publisher
+  markup arrived escaped-but-intact and a reader that decoded it rendered it.
+*/
+const RSS_WITH_UNSAFE_CHANNEL = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Channel &lt;b&gt;bold&lt;/b&gt;</title>
+    <description><![CDATA[<p>Blurb</p><script>alert(1)</script><img src="x" onerror="alert(2)"><a href="javascript:alert(3)">click</a>]]></description>
+    <link>https://example.com/</link>
+    <item><title>One</title><link>https://example.com/1</link><guid>1</guid></item>
+  </channel>
+</rss>`;
+
+Deno.test("exportFeed sanitizes the channel description, not just each item's", async () => {
+  const xml = exportFeed(await parseFeed(RSS_WITH_UNSAFE_CHANNEL));
+  // Safe markup survives (escaped, like every other body this module emits).
+  assertIncludes(xml, "&lt;p&gt;Blurb&lt;/p&gt;");
+  assertIncludes(xml, "&lt;a&gt;click&lt;/a&gt;");
+  // Active content does not, in either spelling ("script" on its own would match inside the word
+  // <description>, which is the element this assertion is about).
+  assertExcludes(xml, "<script");
+  assertExcludes(xml, "&lt;script");
+  assertExcludes(xml, "onerror");
+  assertExcludes(xml, "javascript:");
+  assertExcludes(xml, "<img");
+  // The channel TITLE is a text field, not HTML: it is escaped (so it cannot be markup) and left otherwise
+  // alone, because a sanitizer would corrupt legitimate titles containing angle brackets. Item titles are
+  // treated identically.
+  assertIncludes(xml, "<title>Channel &lt;b&gt;bold&lt;/b&gt;</title>");
+});
+
+/*
   The characters XML 1.0 forbids (full-rss-7kn). Its Char production is
   #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF], so the C0 controls other than tab,
   newline and carriage return, U+FFFE/U+FFFF and unpaired surrogates cannot appear in a well-formed document -

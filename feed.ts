@@ -256,7 +256,17 @@ export const exportFeed = (feed: Feed): string => {
 
   const rssFeed = new RssWithItemMetadata({
     title: feed.title?.value || "",
-    description: feed.description || "",
+    // The channel's description is feed-supplied markup exactly as an item's is, and a reader that renders a
+    // channel blurb renders this one: without the pass it reached the reader escaped-but-intact, so a
+    // publisher could put a script, an event handler or a `javascript:` link in the CHANNEL and have it run
+    // where the same markup in an item would have been stripped (full-rss-gab, the factory finding
+    // tm-channel-metadata-unsanitized). Sanitising is idempotent, so nothing an item already carries changes.
+    //
+    // The channel TITLE is deliberately left as text, and so is every item title: a title is a text field,
+    // `escapeXml` in the builder is the complete guarantee for one, and sanitising it would silently corrupt
+    // legitimate titles (`C++ & <Rust>` loses the bracketed word to a tag stripper). Only the fields a reader
+    // may render as HTML are sanitised, which is the same line the item loop draws.
+    description: sanitizeFeedHtml(feed.description),
     link: safeLink(feed.links[0]),
     authors: parseAuthors(feed.author),
   });
