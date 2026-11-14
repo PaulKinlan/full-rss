@@ -251,6 +251,28 @@ const documentEncoder = new TextEncoder();
  */
 export const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
 
+/**
+ * The per-field character cap on the feed-supplied CHANNEL skeleton (title, description, author name,
+ * email and link). The channel cannot be truncated the way items can - it is the document's skeleton - so
+ * its fields are clamped at the source instead (full-rss-s08): the feed-input byte cap does not bound the
+ * serialized channel, because escapeXml amplifies (`&` -> `&amp;` is 6x, so a 2MB input of ampersands
+ * built a 13.5MB channel-only document). 128K characters x 6x amplification bounds one field at ~768KB
+ * serialized; the whole skeleton stays under ~5MB even with every channel field pathological, below the
+ * document budget, and the item walk below adapts for whatever the skeleton leaves. 128K characters is
+ * already far beyond any legitimate title or blurb, so the clamp never touches a real feed.
+ */
+export const MAX_CHANNEL_FIELD_CHARS = 131_072;
+
+/** The longest prefix of `value` that fits the channel-field cap, never splitting a surrogate pair. */
+const clampChannelText = (value: string): string => {
+  if (value.length <= MAX_CHANNEL_FIELD_CHARS) return value;
+  let end = MAX_CHANNEL_FIELD_CHARS;
+  const code = value.charCodeAt(end - 1);
+  // A high surrogate at the cut has lost its partner: drop it rather than emit half a character.
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return value.slice(0, end);
+};
+
 export const exportFeed = (feed: Feed): string => {
   // Let's just assume RSS.
 
@@ -272,7 +294,7 @@ export const exportFeed = (feed: Feed): string => {
   // The channel's configuration is hoisted so an over-budget document can be re-rendered with a fresh
   // builder: sanitizeFeedHtml is idempotent, so the re-rendered channel is byte-identical to the first.
   const channelArgs = {
-    title: feed.title?.value || "",
+    title: clampChannelText(feed.title?.value || ""),
     // The channel's description is feed-supplied markup exactly as an item's is, and a reader that renders a
     // channel blurb renders this one: without the pass it reached the reader escaped-but-intact, so a
     // publisher could put a script, an event handler or a `javascript:` link in the CHANNEL and have it run
@@ -283,9 +305,18 @@ export const exportFeed = (feed: Feed): string => {
     // `escapeXml` in the builder is the complete guarantee for one, and sanitising it would silently corrupt
     // legitimate titles (`C++ & <Rust>` loses the bracketed word to a tag stripper). Only the fields a reader
     // may render as HTML are sanitised, which is the same line the item loop draws.
-    description: sanitizeFeedHtml(feed.description),
-    link: safeLink(feed.links[0]),
-    authors: parseAuthors(feed.author),
+    description: clampChannelText(sanitizeFeedHtml(feed.description)),
+    link: clampChannelText(safeLink(feed.links[0])),
+    authors: parseAuthors(feed.author).map((author) => ({
+      ...author,
+      // String() guards the shape: a parser revision that hands back a non-string author field must hit the
+      // clamp, not a TypeError.
+      name: clampChannelText(String(author.name ?? "")),
+      email: clampChannelText(String(author.email ?? "")),
+      link: author.link == null
+        ? undefined
+        : clampChannelText(String(author.link)),
+    })),
   };
 
   /*
@@ -354,9 +385,10 @@ export const exportFeed = (feed: Feed): string => {
     the happy path beyond the single measurement.
 
     A single item larger than the whole budget is dropped with the rest (keep lands on 0 and the document is
-    channel-only): a document budget that could not drop an item would be no bound at all. The channel header
-    itself is bounded only by the 2MB feed-input cap, not by this budget - a per-field cap is a different
-    hole than the aggregate one (THREAT_MODEL.md, accepted residuals).
+    channel-only): a document budget that could not drop an item would be no bound at all. The channel
+    skeleton itself is clamped field by field (MAX_CHANNEL_FIELD_CHARS above) - clamping, not dropping,
+    because the channel is the document's identity: without it a dropped-items feed would have no title or
+    link, and refusing would fail the whole request.
 
     Interplay with processFeed: an article fetch may still be spent on an item the budget later drops, the
     same way one is spent on an item past MAX_ITEMS. Ten fetches is the worst such waste, bounded.

@@ -212,9 +212,14 @@ not be seen.
   document in memory and on the wire. An over-budget document keeps the longest
   fitting **prefix** of items (RSS is newest-first, so the head survives)
   measured in true bytes, and a single item larger than the whole budget is
-  dropped with the rest - the bound is hard, not advisory. The channel header
-  itself is bounded only by the feed-input cap, not by this budget (a per-field
-  cap would be a different hole).
+  dropped with the rest - the bound is hard, not advisory. The channel cannot be
+  dropped the way items can (it is the document's skeleton), so its
+  feed-supplied fields are **clamped** instead: `MAX_CHANNEL_FIELD_CHARS` (128K
+  characters per field, title, description, link and author fields), which
+  bounds the worst escapeXml amplification (6x on an all-`&` field) to ~768KB
+  per field and keeps even a channel-only document under the budget
+  (full-rss-s08 - the feed-input byte cap alone did not, because escaping
+  amplifies).
 - The same boundary decides which **links** a reader receives (full-rss-d2m).
   `<link>` (channel and item) is a navigation target, so only `http(s)` is
   re-emitted — anything else becomes an empty element, the shape an item with no
