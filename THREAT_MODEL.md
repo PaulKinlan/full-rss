@@ -53,13 +53,18 @@ Refuses, with `BlockedUrlError` (so callers can answer 403 rather than 500):
   `192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, `224/4`, `240/4`.
   Blocked IPv6: `::`, `::1`, `100::/64`, `2001:2::/48` (benchmarking),
   `2001:db8::/32`, `fc00::/7`, `fe80::/10`, `fec0::/10` (deprecated site-local),
-  `ff00::/8`, and any IPv4-embedded form (mapped `::ffff:0:0/96`, translated
-  `::ffff:0:0:0/96`, compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, Teredo
-  `2001::/32`) whose embedded address is blocked. A Teredo address carries the
-  client IPv4 in bits 96..127 **inverted** (`2001:0:...:3fff:fdd2` tunnels to
-  `192.0.2.45`), so the check complements those bits before classifying them;
-  reading them literally would refuse every client below `240.0.0.0/4` (8.8.8.8
-  is stored `f7f7:f7f7`) instead of the private ones.
+  `ff00::/8`, `64:ff9b:1::/48` (RFC 8215's **local-use NAT64** prefix, which is
+  not globally routable and maps IPv4 into an operator's own network - on such a
+  network `[64:ff9b:1::7f00:1]` reaches loopback - refused as a range rather
+  than decoded, because its suffix layout is operator-chosen, `full-rss-qfm` /
+  `full-rss-96r`), and any IPv4-embedded form (mapped `::ffff:0:0/96`,
+  translated `::ffff:0:0:0/96`, compatible, NAT64 `64:ff9b::/96`, 6to4
+  `2002::/16`, Teredo `2001::/32`) whose embedded address is blocked. A Teredo
+  address carries the client IPv4 in bits 96..127 **inverted**
+  (`2001:0:...:3fff:fdd2` tunnels to `192.0.2.45`), so the check complements
+  those bits before classifying them; reading them literally would refuse every
+  client below `240.0.0.0/4` (8.8.8.8 is stored `f7f7:f7f7`) instead of the
+  private ones.
 - **names meaning "here"** — `localhost`, `*.localhost`, `local`, `internal` —
   before DNS is consulted;
 - **URLs on this service's own host, and on its own addresses.** The caller
