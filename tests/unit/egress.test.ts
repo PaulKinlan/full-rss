@@ -753,21 +753,29 @@ Deno.test("a v6 spelling of an own IPv4 address is the same address", async () =
   }
 });
 
-Deno.test("NAT64's local-use prefix is a different host, not the IPv4 in its tail", async () => {
+Deno.test("the local-use NAT64 prefix is refused as non-global, not as a spelling of our IPv4", async () => {
   // RFC 6052 puts the IPv4 address in the last 32 bits of the WELL-KNOWN prefix 64:ff9b::/96 only. RFC 8215's
   // local-use prefix 64:ff9b:1::/48 is a different /48 whose suffix is operator-chosen, so reading its low 32
   // bits as an IPv4 address conflated an unrelated IPv6 host with whatever those bits spelled - a wildcard that
-  // denied a public host as "this service's own address" (full-rss-96r).
+  // denied a host as "this service's own address" (full-rss-96r). The right answer for the prefix is not to
+  // decode it but to REFUSE it: on a network with a local translator, `[64:ff9b:1::7f00:1]` reaches 127.0.0.1,
+  // and the prefix is not globally routable at all (full-rss-qfm).
   const options = { selfAddresses: ["93.184.216.34"] };
-  const localUse = await parseFetchableUrl(
-    "http://[64:ff9b:1:abcd::5db8:d822]/feed.xml",
-    options,
-  );
-  assertEqual(
-    localUse.hostname,
-    "[64:ff9b:1:abcd::5db8:d822]",
-    "the local-use prefix is its own host, not the IPv4 its tail spells",
-  );
+  for (
+    const url of [
+      "http://[64:ff9b:1::7f00:1]/x", // the address a local translator maps 127.0.0.1 to
+      "http://[64:ff9b:1:abcd::5db8:d822]/feed.xml", // the tail that spells OUR OWN address
+      "http://[64:ff9b:1:ffff::1]/x", // the far end of the /48
+    ]
+  ) {
+    // Refused for being a local/reserved range - NOT for being this service, which is the distinction the
+    // previous finding was about. The tail is never consulted.
+    await assertRejects(
+      () => parseFetchableUrl(url, options),
+      "private, reserved or local address",
+      `${url} is refused as a non-global prefix`,
+    );
+  }
   // The well-known prefix is still read as the address it carries, in both directions of the check.
   await assertRejects(
     () => parseFetchableUrl("http://[64:ff9b::5db8:d822]/feed.xml", options),
@@ -779,16 +787,20 @@ Deno.test("NAT64's local-use prefix is a different host, not the IPv4 in its tai
     "private, reserved or local address",
     "a well-known NAT64 of loopback is still blocked",
   );
-  // ... and the local-use form of that same tail is not blocked on the strength of it either.
-  const localUseLoopback = await parseFetchableUrl(
-    "http://[64:ff9b:1:abcd::7f00:1]/feed.xml",
-    options,
-  );
-  assertEqual(
-    localUseLoopback.hostname,
-    "[64:ff9b:1:abcd::7f00:1]",
-    "the local-use prefix is not judged by its tail",
-  );
+  // The block is the /48 the RFC names, not everything under 64:ff9b::/32: unallocated space beside it and an
+  // ordinary public address stay fetchable, so the refusal does not spread to unrelated hosts.
+  for (
+    const url of [
+      "http://[64:ff9b:2::1]/x",
+      "http://[2606:2800:220:1:248:1893:25c8:1946]/x",
+    ]
+  ) {
+    const allowed = await parseFetchableUrl(url, options);
+    assert(
+      allowed != null,
+      `${url} is not in the local-use /48 and stays fetchable`,
+    );
+  }
 });
 
 Deno.test("self hosts come from configuration, parsed strictly", () => {

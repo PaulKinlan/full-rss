@@ -178,6 +178,17 @@ const isBlockedIPv6 = (groups: number[]): boolean => {
   if (
     groups[0] === 0x0100 && groups.slice(1, 4).every((group) => group === 0)
   ) return true; // 100::/64
+  if (
+    groups[0] === 0x0064 && groups[1] === 0xff9b && groups[2] === 0x0001
+  ) {
+    // RFC 8215's LOCAL-USE NAT64 prefix (64:ff9b:1::/48). It is not globally routable - it is the prefix an
+    // operator maps IPv4 into on their own network - so on such a network `[64:ff9b:1::7f00:1]` reaches
+    // 127.0.0.1 through the translator. `ipv6ToV4` deliberately does NOT read its suffix as an IPv4 address
+    // (the layout is operator-chosen, and doing so conflated unrelated hosts - full-rss-96r), so the range
+    // check is where this prefix is refused: as a non-global address, not as a spelling of one
+    // (full-rss-qfm, the factory finding tm-ipv6-local-use-nat64-not-blocked).
+    return true;
+  }
   if (groups[0] === 0x2001 && groups[1] === 0x0db8) return true; // 2001:db8::/32 documentation
   if (
     groups[0] === 0x2001 && groups[1] === 0x0002 && groups[2] === 0
