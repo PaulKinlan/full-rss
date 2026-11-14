@@ -205,7 +205,16 @@ not be seen.
   full-rss-l66): a feed with tens of thousands of entries may not turn unbounded
   entry count into unbounded per-item sanitization and build work. The bound
   counts **emitted** items — an entry with no title is skipped before any of
-  that work and spends none of the budget.
+  that work and spends none of the budget. The same boundary also bounds the
+  document **in aggregate** at `MAX_DOCUMENT_BYTES` (8 MB of UTF-8,
+  full-rss-nb7): item count and per-item caps do not bound their sum, and ten
+  expanded articles at the article cap would otherwise assemble a ~50 MB
+  document in memory and on the wire. An over-budget document keeps the longest
+  fitting **prefix** of items (RSS is newest-first, so the head survives)
+  measured in true bytes, and a single item larger than the whole budget is
+  dropped with the rest - the bound is hard, not advisory. The channel header
+  itself is bounded only by the feed-input cap, not by this budget (a per-field
+  cap would be a different hole).
 - The same boundary decides which **links** a reader receives (full-rss-d2m).
   `<link>` (channel and item) is a navigation target, so only `http(s)` is
   re-emitted — anything else becomes an empty element, the shape an item with no

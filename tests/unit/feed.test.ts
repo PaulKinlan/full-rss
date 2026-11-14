@@ -11,7 +11,7 @@ import {
   assertIncludes,
 } from "../asserts.ts";
 import { parseFeed } from "@mikaelporttila/rss";
-import { exportFeed, processFeed } from "../../feed.ts";
+import { exportFeed, MAX_DOCUMENT_BYTES, processFeed } from "../../feed.ts";
 
 const RSS = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
@@ -637,4 +637,85 @@ Deno.test("processFeed spends its expansion budget only on entries the export ca
   } finally {
     console.error = originalError;
   }
+});
+
+// --- the aggregate document budget (full-rss-nb7) -----------------------------------------------------------
+
+/** A feed with `n` items whose TITLES are each about `kb` kilobytes of text. Titles are deliberately not
+ * sanitised (escapeXml is a text field's whole guarantee), so the bulk bytes reach the document cheaply and
+ * the test measures the budget, not sanitize-html. */
+const oversizeFeed = (n: number, kb: number): string => {
+  const items = Array.from(
+    { length: n },
+    (_, i) =>
+      `<item><title>Item ${i + 1} ${
+        "x".repeat(kb * 1024)
+      }</title><link>https://example.com/${
+        i + 1
+      }</link><guid>https://example.com/${i + 1}</guid></item>`,
+  ).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel><title>Budget</title><description>budget fixture</description><link>https://example.com/</link>
+${items}
+  </channel>
+</rss>`;
+};
+
+Deno.test("an assembled document over the byte budget keeps the longest fitting prefix", async () => {
+  // Twelve ~1MB-item titles build well over MAX_DOCUMENT_BYTES, so the export must truncate: the kept items
+  // are the head of the feed (RSS is newest-first, so that is the prefix a reader wants), the document is
+  // under the budget measured in true UTF-8 bytes, and it is still a whole RSS document.
+  const xml = exportFeed(await parseFeed(oversizeFeed(12, 1024)));
+  const kept = itemCount(xml);
+  assert(kept < 12, `expected truncation, got all ${kept} items`);
+  assert(
+    new TextEncoder().encode(xml).byteLength <= MAX_DOCUMENT_BYTES,
+    `the truncated document fits the budget, got ${
+      new TextEncoder().encode(xml).byteLength
+    } bytes`,
+  );
+  assertIncludes(xml, "<title>Item 1 ", "the head of the feed survives");
+  assertExcludes(xml, "<title>Item 12", "the tail is dropped");
+  assertIncludes(xml, "</rss>", "the document is still whole");
+});
+
+Deno.test("a document under the byte budget is emitted whole", async () => {
+  const xml = exportFeed(await parseFeed(oversizeFeed(4, 32)));
+  assertEqual(itemCount(xml), 4, "every item survives a feed that fits");
+  assert(
+    new TextEncoder().encode(xml).byteLength <= MAX_DOCUMENT_BYTES,
+    "a fitting feed is returned unchanged in size class",
+  );
+});
+
+Deno.test("the budget is measured in bytes, not characters", async () => {
+  // 4.1M two-byte characters: 8.2MB of UTF-8, over the budget, while 4.1M .length units would fit an
+  // 8-million-CHARACTER budget - the discriminator between a byte measure and a character measure.
+  const body = "\u00e9".repeat(4_100_000);
+  const feed = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel><title>Bytes</title><description>bytes fixture</description><link>https://example.com/</link>
+  <item><title>Wide</title><link>https://example.com/wide</link><guid>https://example.com/wide</guid>
+  <content:encoded><![CDATA[${body}]]></content:encoded></item>
+  <item><title>Small</title><link>https://example.com/small</link><guid>https://example.com/small</guid></item>
+  </channel>
+</rss>`;
+  const xml = exportFeed(await parseFeed(feed));
+  assert(
+    new TextEncoder().encode(xml).byteLength <= MAX_DOCUMENT_BYTES,
+    "the wide item is dropped: bytes, not characters, are the measure",
+  );
+});
+
+Deno.test("a single item larger than the whole budget is dropped with the rest", async () => {
+  // One 9MB item: no prefix of it fits, so the document is channel-only rather than over the budget - the
+  // bound is hard, not advisory (full-rss-nb7).
+  const xml = exportFeed(await parseFeed(oversizeFeed(2, 9 * 1024)));
+  assertEqual(itemCount(xml), 0, "no item fits, so no item is emitted");
+  assertIncludes(xml, "<title>Budget</title>", "the channel itself survives");
+  assert(
+    new TextEncoder().encode(xml).byteLength <= MAX_DOCUMENT_BYTES,
+    "the channel-only document is under the budget",
+  );
 });

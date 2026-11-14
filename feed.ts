@@ -1,7 +1,8 @@
 /*
   feed.ts - the feed itself: `exportFeed` renders a parsed feed as the RSS 2.0 document a reader receives
-  (at most MAX_ITEMS items, so an upstream's entry count cannot become unbounded export work - full-rss-l66),
-  and `processFeed` fills in each item's full article content (up to MAX_ARTICLES) using content.ts.
+  (at most MAX_ITEMS items and at most MAX_DOCUMENT_BYTES, so an upstream's entry count and item sizes cannot
+  become unbounded export work - full-rss-l66, full-rss-nb7), and `processFeed` fills in each item's full
+  article content (up to MAX_ARTICLES) using content.ts.
 
   Parsing the incoming XML document is deliberately NOT here: that happens at the HTTP boundary in
   server.ts, which hands this module a parsed Feed (full-rss-11b, the ADR full-rss-7d0).
@@ -237,6 +238,19 @@ class RssWithItemMetadata extends Rss {
 const isEmittable = (entry: Feed["entries"][number]): boolean =>
   entry.title != null;
 
+/** Reused so measuring a document does not re-instantiate the encoder per export. */
+const documentEncoder = new TextEncoder();
+
+/**
+ * The aggregate bound on the document a reader receives, in UTF-8 bytes (full-rss-nb7). The per-item bounds
+ * (MAX_ITEMS on count, MAX_ARTICLE_BYTES on one article's input) do not bound their SUM: ten expanded
+ * articles at the 5MB article cap plus two hundred stub items build a ~50MB document in memory and on the
+ * wire. 8MB admits one maximal legitimate article (5MB) plus every stub item whole, so the bound never
+ * costs a legitimate feed more than its most extreme single article, while capping what a publisher can
+ * make this service assemble, hold and serve by an order of magnitude.
+ */
+export const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
+
 export const exportFeed = (feed: Feed): string => {
   // Let's just assume RSS.
 
@@ -255,7 +269,9 @@ export const exportFeed = (feed: Feed): string => {
     ];
   };
 
-  const rssFeed = new RssWithItemMetadata({
+  // The channel's configuration is hoisted so an over-budget document can be re-rendered with a fresh
+  // builder: sanitizeFeedHtml is idempotent, so the re-rendered channel is byte-identical to the first.
+  const channelArgs = {
     title: feed.title?.value || "",
     // The channel's description is feed-supplied markup exactly as an item's is, and a reader that renders a
     // channel blurb renders this one: without the pass it reached the reader escaped-but-intact, so a
@@ -270,7 +286,7 @@ export const exportFeed = (feed: Feed): string => {
     description: sanitizeFeedHtml(feed.description),
     link: safeLink(feed.links[0]),
     authors: parseAuthors(feed.author),
-  });
+  };
 
   /*
     The export is where an upstream's entry count becomes this service's work: every entry that reaches the
@@ -279,17 +295,19 @@ export const exportFeed = (feed: Feed): string => {
     The bound counts emitted items, not entries scanned: an entry without a title is skipped before any of
     that work and costs the loop nothing, so it does not spend the budget. 200 keeps every realistic feed
     whole; a feed with tens of thousands of entries is truncated, as feed readers bound feeds themselves.
+
+    The items are collected first and rendered afterwards, so the document budget below can re-render a
+    prefix of them without re-running the sanitising passes.
   */
   const MAX_ITEMS = 200;
-  let emitted = 0;
+  const collected: { item: FeedItem; metadata: ItemMetadata }[] = [];
   for (const entry of feed.entries) {
-    if (emitted >= MAX_ITEMS) {
+    if (collected.length >= MAX_ITEMS) {
       break;
     }
     if (!isEmittable(entry)) {
       continue;
     }
-    emitted++;
 
     const content = sanitizeFeedHtml(entry.content?.value);
 
@@ -299,8 +317,8 @@ export const exportFeed = (feed: Feed): string => {
 
     // The item's author and categories go with the item: the subclass above writes them into the item's own
     // block, because the builder cannot carry them itself (full-rss-fhy).
-    rssFeed.addItemWithMetadata(
-      {
+    collected.push({
+      item: {
         title: entry.title?.value || "",
         description: sanitizeFeedHtml(entry.description?.value),
         link: safeLink(links[0]),
@@ -311,16 +329,68 @@ export const exportFeed = (feed: Feed): string => {
           type: "html",
         },
       },
-      {
+      metadata: {
         author: itemAuthor(entry.author),
         categories: itemCategories(entry.categories),
       },
-    );
+    });
   }
 
+  const render = (count: number): string => {
+    const doc = new RssWithItemMetadata(channelArgs);
+    for (const { item, metadata } of collected.slice(0, count)) {
+      doc.addItemWithMetadata(item, metadata);
+    }
+    return doc.build();
+  };
+
+  /*
+    The aggregate byte budget (full-rss-nb7): measure the whole document, and only when it is over
+    MAX_DOCUMENT_BYTES, keep the longest PREFIX of items that fits and re-render just that. Truncation, not
+    refusal: throwing here would fail the whole request because one article was huge, and a smaller whole
+    feed is what the reader can still use. RSS items are newest-first, so the prefix that survives is the
+    head of the feed. The walk derives each item's byte size from the one build (split on ITEM_END, which is
+    pure ASCII, so per-part byte lengths sum to the document's), costing no extra serialisation passes on
+    the happy path beyond the single measurement.
+
+    A single item larger than the whole budget is dropped with the rest (keep lands on 0 and the document is
+    channel-only): a document budget that could not drop an item would be no bound at all. The channel header
+    itself is bounded only by the 2MB feed-input cap, not by this budget - a per-field cap is a different
+    hole than the aggregate one (THREAT_MODEL.md, accepted residuals).
+
+    Interplay with processFeed: an article fetch may still be spent on an item the budget later drops, the
+    same way one is spent on an item past MAX_ITEMS. Ten fetches is the worst such waste, bounded.
+  */
+  const built = render(collected.length);
+  let keep = collected.length;
+  if (
+    documentEncoder.encode(built).byteLength > MAX_DOCUMENT_BYTES && keep > 0
+  ) {
+    const parts = built.split(ITEM_END);
+    const endBytes = documentEncoder.encode(ITEM_END).byteLength;
+    let running = documentEncoder.encode(parts[parts.length - 1]).byteLength;
+    keep = 0;
+    for (let i = 0; i < collected.length; i++) {
+      running += endBytes + documentEncoder.encode(parts[i]).byteLength;
+      if (running > MAX_DOCUMENT_BYTES) break;
+      keep = i + 1;
+    }
+    let xml = render(keep);
+    let size = documentEncoder.encode(xml).byteLength;
+    // The walk's sizes come from the same build the prefix is re-rendered from, so the rebuild should sit
+    // exactly where the walk put it. If a builder rendering change ever makes it differ, drop items one at
+    // a time until the document fits - the bound is hard, not advisory (full-rss-nb7).
+    while (size > MAX_DOCUMENT_BYTES && keep > 0) {
+      keep--;
+      xml = render(keep);
+      size = documentEncoder.encode(xml).byteLength;
+    }
+    // stripXmlIllegal only removes, so a measured document cannot grow past the budget here.
+    return stripXmlIllegal(xml);
+  }
   // The single export boundary: whatever a reader receives has passed through here, so this is the one place
   // the document's character set has to be legal XML 1.0 (stripXmlIllegal above).
-  return stripXmlIllegal(rssFeed.build());
+  return stripXmlIllegal(built);
 };
 
 /*
